@@ -29,6 +29,8 @@ const LAYER_ORDER = ['1', '2', '3', '4.1', '4.2', '4.3', '4.4', '4.5', '5', '6',
 // State
 let currentTab = 'generate';
 let customData = null;
+let csvContent = null;  // Raw CSV content for backend adapter
+let generatedData = null;  // Generated data for preview
 let lastResults = null;
 let aiEnabled = false;
 
@@ -206,9 +208,12 @@ function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
-            customData = parseCSV(e.target.result);
+            // Store raw CSV content for backend adapter
+            csvContent = e.target.result;
+            // Parse locally for preview only
+            customData = parseCSV(csvContent);
             showDataPreview(customData);
-            showToast('success', `Loaded ${customData.length} records from CSV`);
+            showToast('success', `Loaded ${customData.length} records from CSV (will be adapted to VISA format)`);
         } catch (err) {
             showToast('error', 'Failed to parse CSV: ' + err.message);
         }
@@ -230,6 +235,7 @@ function parseCSV(text) {
 
 function clearFile() {
     customData = null;
+    csvContent = null;
     document.getElementById('fileInfo').style.display = 'none';
     document.getElementById('dropZone').style.display = 'block';
     document.getElementById('csvFile').value = '';
@@ -346,6 +352,28 @@ async function runPipeline() {
                 anomaly_rate: parseInt(document.getElementById('anomalyRate').value) / 100,
                 use_ai: aiEnabled,
                 seed: Date.now() % 10000
+            };
+
+            // Show preview for generated data
+            try {
+                const previewResp = await fetch(`${API_BASE}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const previewData = await previewResp.json();
+                if (previewData.success && previewData.preview) {
+                    generatedData = previewData.transactions;
+                    showDataPreview(previewData.preview);
+                }
+            } catch (e) {
+                console.log('Preview generation failed, continuing with pipeline');
+            }
+        } else if (currentTab === 'csv' && csvContent) {
+            // Send raw CSV content to backend for adapter processing
+            body = {
+                csv_content: csvContent,
+                use_ai: aiEnabled
             };
         } else {
             if (!customData || customData.length === 0) {

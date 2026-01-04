@@ -2,6 +2,7 @@
 Flask API Server for DQS Engine Frontend
 
 Provides REST endpoints to interact with the Data Quality Scoring Engine.
+Supports standard VISA format and graceful handling of non-standard CSV/JSON.
 """
 import os
 import sys
@@ -17,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.dqs_engine import DQSEngine
 from src.data_generator import generate_visa_transactions
+from src.csv_adapter import adapt_csv_to_visa, adapt_flat_json_to_visa
 from src.config import Action
 
 
@@ -83,7 +85,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0",
+        "version": "2.0.0",
         "layers": 15,
         "phases": 7
     })
@@ -91,7 +93,7 @@ def health():
 
 @app.route('/api/generate', methods=['POST'])
 def generate_data():
-    """Generate sample VISA transactions."""
+    """Generate sample VISA transactions with preview."""
     try:
         data = request.get_json() or {}
         n_transactions = min(int(data.get('count', 20)), 500)  # Max 500
@@ -104,14 +106,13 @@ def generate_data():
             random_seed=seed
         )
         
-        # Return just first 5 as preview
-        preview = transactions[:5] if isinstance(transactions, list) else [transactions]
-        
+        # Return full transactions for preview
         return jsonify({
             "success": True,
             "count": n_transactions,
             "anomaly_rate": anomaly_rate,
-            "preview": preview,
+            "preview": transactions[:20],  # Preview up to 20
+            "transactions": transactions,  # Full data for execution
             "message": f"Generated {n_transactions} transactions"
         })
     except Exception as e:
@@ -120,17 +121,32 @@ def generate_data():
 
 @app.route('/api/run', methods=['POST'])
 def run_pipeline():
-    """Run the complete DQS pipeline."""
+    """Run the complete DQS pipeline with graceful CSV/JSON handling."""
     try:
         data = request.get_json() or {}
         
-        # Check for custom data first
+        # Check for various data sources
         custom_data = data.get('custom_data')
+        csv_content = data.get('csv_content')
         use_ai = data.get('use_ai', False)
         
-        if custom_data:
-            # Use custom data provided by user
-            transactions = custom_data if isinstance(custom_data, list) else [custom_data]
+        import_metadata = None
+        
+        if csv_content:
+            # CSV content provided - adapt to VISA format
+            transactions, import_metadata = adapt_csv_to_visa(csv_content)
+            if not transactions:
+                return jsonify({
+                    "success": False,
+                    "error": "Failed to parse CSV content. Please check the format."
+                }), 400
+                
+        elif custom_data:
+            # JSON data provided - check if it needs adaptation
+            if isinstance(custom_data, list):
+                transactions, import_metadata = adapt_flat_json_to_visa(custom_data)
+            else:
+                transactions, import_metadata = adapt_flat_json_to_visa([custom_data])
         else:
             # Generate transactions
             n_transactions = min(int(data.get('count', 20)), 500)
@@ -142,6 +158,12 @@ def run_pipeline():
                 anomaly_rate=anomaly_rate,
                 random_seed=seed
             )
+        
+        if not transactions:
+            return jsonify({
+                "success": False,
+                "error": "No valid transactions to process"
+            }), 400
         
         # Run engine
         eng = get_engine(use_ai=use_ai)
@@ -174,7 +196,19 @@ def run_pipeline():
                 "can_continue": res.can_continue
             }
         
-        return jsonify({
+        # Add import warnings to decision report if applicable
+        decision_report = result.decision_report or ""
+        if import_metadata and import_metadata.get("warnings"):
+            warning_header = "\n\n--- DATA IMPORT NOTICE ---\n"
+            warning_header += f"Schema Compliance: {import_metadata.get('compliance_score', 0):.0f}%\n"
+            for warning in import_metadata.get("warnings", []):
+                warning_header += f"Warning: {warning}\n"
+            warning_header += "\nFor best results, use the standard VISA transaction format.\n"
+            warning_header += "See documentation for required fields and structure.\n"
+            warning_header += "-" * 30 + "\n\n"
+            decision_report = warning_header + decision_report
+        
+        response = {
             "success": result.success,
             "batch_id": result.batch_id,
             "execution_id": result.execution_id,
@@ -188,10 +222,24 @@ def run_pipeline():
             "total_duration_ms": round(result.total_duration_ms, 2),
             "layer_timings": layer_timings,
             "layer_details": layer_details,
-            "decision_report": result.decision_report,
+            "decision_report": decision_report,
             "execution_report": result.execution_report,
             "errors": result.errors
-        })
+        }
+        
+        # Add import metadata if present
+        if import_metadata:
+            response["import_metadata"] = {
+                "source": import_metadata.get("source", "unknown"),
+                "compliance_score": import_metadata.get("compliance_score", 100),
+                "is_standard_format": import_metadata.get("is_standard_format", True),
+                "quality_penalty": import_metadata.get("quality_penalty", 0),
+                "warnings": import_metadata.get("warnings", []),
+                "missing_fields": import_metadata.get("missing_fields", [])[:10]
+            }
+        
+        return jsonify(response)
+        
     except Exception as e:
         import traceback
         return jsonify({
@@ -235,9 +283,54 @@ def get_layers():
     return jsonify({"layers": layers, "phases": phases})
 
 
+@app.route('/api/schema')
+def get_schema():
+    """Get the expected VISA transaction schema."""
+    schema = {
+        "description": "VISA Transaction Schema for DQS Engine",
+        "required_sections": [
+            "transaction", "card", "merchant", "customer", 
+            "authentication", "fraud", "network", "compliance", 
+            "settlement", "business_metadata"
+        ],
+        "required_fields": {
+            "transaction": ["transaction_id", "amount", "currency", "timestamp"],
+            "card": ["network", "card_type"],
+            "merchant": ["merchant_id", "merchant_category_code", "country"],
+            "customer": ["customer_id"],
+            "fraud": ["risk_score"]
+        },
+        "example": {
+            "transaction": {
+                "transaction_id": "txn_00000001",
+                "amount": 5000.00,
+                "currency": "INR",
+                "timestamp": "2026-01-05T10:30:00Z",
+                "status": "approved"
+            },
+            "card": {
+                "network": "VISA",
+                "card_type": "credit"
+            },
+            "merchant": {
+                "merchant_id": "MID_1234",
+                "merchant_category_code": "5812",
+                "country": "IN"
+            },
+            "customer": {
+                "customer_id": "cust_1234"
+            },
+            "fraud": {
+                "risk_score": 25
+            }
+        }
+    }
+    return jsonify(schema)
+
+
 if __name__ == '__main__':
     print("=" * 60)
-    print("  DQS ENGINE - Web Interface")
+    print("  DQS ENGINE - Enterprise Data Quality Platform")
     print("  Open http://localhost:5000 in your browser")
     print("=" * 60)
     app.run(debug=True, port=5000)
