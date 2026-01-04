@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
     <div class="app-container">
         <!-- Header -->
@@ -27,33 +29,105 @@
         </header>
 
         <main class="main-content">
-            <!-- Control Panel -->
-            <section class="control-panel glass-card">
-                <h2>Pipeline Configuration</h2>
-                <div class="control-grid">
-                    <div class="control-group">
-                        <label for="txnCount">Transaction Count</label>
-                        <input type="range" id="txnCount" min="10" max="200" value="50" oninput="updateSlider('txnCount', 'txnCountValue')">
-                        <span id="txnCountValue" class="slider-value">50</span>
-                    </div>
-                    <div class="control-group">
-                        <label for="anomalyRate">Anomaly Rate (%)</label>
-                        <input type="range" id="anomalyRate" min="0" max="50" value="15" oninput="updateSlider('anomalyRate', 'anomalyRateValue')">
-                        <span id="anomalyRateValue" class="slider-value">15%</span>
-                    </div>
-                    <div class="control-group">
-                        <label for="useAI">Enable Gemini AI</label>
-                        <div class="toggle-switch">
-                            <input type="checkbox" id="useAI">
-                            <label for="useAI"></label>
+            <!-- Data Input Section -->
+            <section class="data-input-section glass-card">
+                <h2>Data Input</h2>
+                <div class="input-tabs">
+                    <button class="tab-btn active" data-tab="generate" onclick="switchTab('generate')">Generate
+                        Sample</button>
+                    <button class="tab-btn" data-tab="json" onclick="switchTab('json')">JSON Input</button>
+                    <button class="tab-btn" data-tab="csv" onclick="switchTab('csv')">CSV Upload</button>
+                </div>
+
+                <!-- Generate Tab -->
+                <div class="tab-content active" id="tab-generate">
+                    <div class="control-grid">
+                        <div class="control-group">
+                            <label for="txnCount">Transaction Count</label>
+                            <input type="range" id="txnCount" min="10" max="200" value="50"
+                                oninput="updateSlider('txnCount', 'txnCountValue')">
+                            <span id="txnCountValue" class="slider-value">50</span>
+                        </div>
+                        <div class="control-group">
+                            <label for="anomalyRate">Anomaly Rate</label>
+                            <input type="range" id="anomalyRate" min="0" max="50" value="15"
+                                oninput="updateSlider('anomalyRate', 'anomalyRateValue')">
+                            <span id="anomalyRateValue" class="slider-value">15%</span>
+                        </div>
+                        <div class="control-group">
+                            <label for="useAI">Enable Gemini AI</label>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="useAI">
+                                <label for="useAI"></label>
+                            </div>
                         </div>
                     </div>
-                    <div class="control-group">
-                        <button id="runPipelineBtn" class="btn btn-primary" onclick="runPipeline()">
-                            <span class="btn-icon">▶</span>
-                            Run Pipeline
-                        </button>
+                </div>
+
+                <!-- JSON Tab -->
+                <div class="tab-content" id="tab-json">
+                    <div class="json-input-container">
+                        <label>Paste your JSON transaction data:</label>
+                        <textarea id="jsonInput" class="json-textarea" placeholder='[
+  {
+    "transaction": {
+      "transaction_id": "txn_001",
+      "amount": 5000,
+      "currency": "INR",
+      ...
+    },
+    "card": { ... },
+    "merchant": { ... },
+    ...
+  }
+]'></textarea>
+                        <div class="json-actions">
+                            <button class="btn btn-secondary" onclick="validateJson()">Validate JSON</button>
+                            <button class="btn btn-secondary" onclick="loadSampleJson()">Load Sample</button>
+                            <span id="jsonStatus" class="json-status"></span>
+                        </div>
                     </div>
+                </div>
+
+                <!-- CSV Tab -->
+                <div class="tab-content" id="tab-csv">
+                    <div class="csv-upload-container">
+                        <div class="file-drop-zone" id="dropZone">
+                            <div class="drop-icon">📁</div>
+                            <p>Drag and drop your CSV file here</p>
+                            <p class="drop-hint">or</p>
+                            <input type="file" id="csvFile" accept=".csv" onchange="handleFileUpload(event)" hidden>
+                            <button class="btn btn-secondary"
+                                onclick="document.getElementById('csvFile').click()">Browse Files</button>
+                        </div>
+                        <div id="fileInfo" class="file-info" style="display: none;">
+                            <span class="file-name" id="fileName"></span>
+                            <span class="file-size" id="fileSize"></span>
+                            <button class="btn-icon-small" onclick="clearFile()">✕</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Run Button -->
+                <div class="run-section">
+                    <button id="runPipelineBtn" class="btn btn-primary btn-large" onclick="runPipeline()">
+                        <span class="btn-icon">▶</span>
+                        Run Quality Analysis
+                    </button>
+                </div>
+            </section>
+
+            <!-- Data Preview Section -->
+            <section class="data-preview glass-card" id="dataPreviewSection" style="display: none;">
+                <div class="section-header">
+                    <h2>Data Preview</h2>
+                    <span class="record-count" id="previewCount">0 records</span>
+                </div>
+                <div class="preview-table-container">
+                    <table class="preview-table" id="previewTable">
+                        <thead id="previewTableHead"></thead>
+                        <tbody id="previewTableBody"></tbody>
+                    </table>
                 </div>
             </section>
 
@@ -151,6 +225,7 @@
                             <span class="card-value" id="safeCount">0</span>
                             <span class="card-label">Safe to Use</span>
                         </div>
+                        <div class="card-description">Ready for processing</div>
                     </div>
                     <div class="summary-card card-warning">
                         <div class="card-icon">⚠</div>
@@ -158,6 +233,7 @@
                             <span class="card-value" id="reviewCount">0</span>
                             <span class="card-label">Review Required</span>
                         </div>
+                        <div class="card-description">Needs human verification</div>
                     </div>
                     <div class="summary-card card-danger">
                         <div class="card-icon">!</div>
@@ -165,6 +241,7 @@
                             <span class="card-value" id="escalateCount">0</span>
                             <span class="card-label">Escalate</span>
                         </div>
+                        <div class="card-description">Urgent attention needed</div>
                     </div>
                     <div class="summary-card card-neutral">
                         <div class="card-icon">×</div>
@@ -172,6 +249,7 @@
                             <span class="card-value" id="rejectedCount">0</span>
                             <span class="card-label">Rejected</span>
                         </div>
+                        <div class="card-description">Failed validation</div>
                     </div>
                 </div>
 
@@ -186,6 +264,7 @@
                             <div class="metric-value" id="qualityRate">0%</div>
                         </div>
                         <span class="metric-label">Quality Rate</span>
+                        <span class="metric-hint">Percentage of safe records</span>
                     </div>
                     <div class="metric-card glass-card">
                         <div class="metric-circle" id="dqsCircle">
@@ -196,6 +275,7 @@
                             <div class="metric-value" id="avgDqs">0</div>
                         </div>
                         <span class="metric-label">Average DQS</span>
+                        <span class="metric-hint">Data Quality Score (0-100)</span>
                     </div>
                     <div class="metric-card glass-card">
                         <div class="metric-info">
@@ -203,6 +283,7 @@
                             <span class="metric-sub">records</span>
                         </div>
                         <span class="metric-label">Total Processed</span>
+                        <span class="metric-hint">Input transactions analyzed</span>
                     </div>
                     <div class="metric-card glass-card">
                         <div class="metric-info">
@@ -210,12 +291,16 @@
                             <span class="metric-sub">ms</span>
                         </div>
                         <span class="metric-label">Total Duration</span>
+                        <span class="metric-hint">Pipeline execution time</span>
                     </div>
                 </div>
 
                 <!-- Layer Details -->
                 <div class="layer-details glass-card">
-                    <h2>Layer Execution Details</h2>
+                    <div class="section-header">
+                        <h2>Layer Execution Details</h2>
+                        <span class="layer-count">15 layers executed</span>
+                    </div>
                     <div class="layer-table-container">
                         <table class="layer-table">
                             <thead>
@@ -234,15 +319,47 @@
                     </div>
                 </div>
 
+                <!-- AI Analysis Section -->
+                <div class="ai-analysis glass-card" id="aiAnalysisSection">
+                    <div class="section-header">
+                        <h2>Quality Analysis Summary</h2>
+                        <span class="ai-badge">AI-Powered Insights</span>
+                    </div>
+                    <div class="analysis-content" id="analysisContent">
+                        <!-- Will be populated dynamically -->
+                    </div>
+                </div>
+
+                <!-- Records Requiring Review -->
+                <div class="review-records glass-card" id="reviewRecordsSection" style="display: none;">
+                    <div class="section-header">
+                        <h2>Records Requiring Attention</h2>
+                        <span class="review-count-badge" id="reviewBadge">0</span>
+                    </div>
+                    <div class="review-cards" id="reviewCards">
+                        <!-- Will be populated dynamically -->
+                    </div>
+                </div>
+
                 <!-- Reports Section -->
                 <div class="reports-section">
                     <div class="report-card glass-card">
-                        <h3>Decision Report</h3>
-                        <pre id="decisionReport" class="report-content"></pre>
+                        <div class="section-header">
+                            <h3>Decision Report</h3>
+                            <button class="btn-copy" onclick="copyReport('decisionReport')">Copy</button>
+                        </div>
+                        <div class="report-content-wrapper">
+                            <div id="decisionReport" class="report-content"></div>
+                        </div>
                     </div>
                     <div class="report-card glass-card">
-                        <h3>Execution Log</h3>
-                        <pre id="executionReport" class="report-content"></pre>
+                        <div class="section-header">
+                            <h3>Execution Log</h3>
+                            <button class="btn-copy" onclick="copyReport('executionReport')">Copy</button>
+                        </div>
+                        <div class="report-content-wrapper">
+                            <div id="executionReport" class="report-content"></div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -251,9 +368,32 @@
             <div class="loading-overlay" id="loadingOverlay" style="display: none;">
                 <div class="loading-content">
                     <div class="loading-spinner"></div>
-                    <div class="loading-text">Processing <span id="loadingLayer">Layer 1</span>...</div>
+                    <div class="loading-text">Processing <span id="loadingLayer">Layer 1</span></div>
+                    <div class="loading-phase" id="loadingPhase">Phase 1: Foundation</div>
                     <div class="loading-progress">
                         <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                    <div class="loading-percent" id="loadingPercent">0%</div>
+                </div>
+            </div>
+
+            <!-- Error Modal -->
+            <div class="error-modal" id="errorModal" style="display: none;">
+                <div class="error-modal-content glass-card">
+                    <div class="error-header">
+                        <span class="error-icon">⚠</span>
+                        <h3>Error Occurred</h3>
+                    </div>
+                    <div class="error-body">
+                        <p id="errorMessage"></p>
+                        <div class="error-details" id="errorDetails" style="display: none;">
+                            <h4>Technical Details</h4>
+                            <pre id="errorTrace"></pre>
+                        </div>
+                    </div>
+                    <div class="error-actions">
+                        <button class="btn btn-secondary" onclick="toggleErrorDetails()">Show Details</button>
+                        <button class="btn btn-primary" onclick="closeErrorModal()">Close</button>
                     </div>
                 </div>
             </div>
@@ -261,10 +401,11 @@
 
         <!-- Footer -->
         <footer class="footer">
-            <p>DQS Engine v1.0 | 15 Layers | 7 Phases | "Rules Enforce, ML Informs, Humans Decide"</p>
+            <p>DQS Engine v1.0 • 15 Layers • 7 Phases • "Rules Enforce, ML Informs, Humans Decide"</p>
         </footer>
     </div>
 
     <script src="script.js"></script>
 </body>
+
 </html>

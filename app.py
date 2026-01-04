@@ -124,18 +124,24 @@ def run_pipeline():
     try:
         data = request.get_json() or {}
         
-        # Get parameters
-        n_transactions = min(int(data.get('count', 20)), 500)
-        anomaly_rate = min(float(data.get('anomaly_rate', 0.15)), 0.5)
+        # Check for custom data first
+        custom_data = data.get('custom_data')
         use_ai = data.get('use_ai', False)
-        seed = data.get('seed', 42)
         
-        # Generate transactions
-        transactions = generate_visa_transactions(
-            n_transactions=n_transactions,
-            anomaly_rate=anomaly_rate,
-            random_seed=seed
-        )
+        if custom_data:
+            # Use custom data provided by user
+            transactions = custom_data if isinstance(custom_data, list) else [custom_data]
+        else:
+            # Generate transactions
+            n_transactions = min(int(data.get('count', 20)), 500)
+            anomaly_rate = min(float(data.get('anomaly_rate', 0.15)), 0.5)
+            seed = data.get('seed', 42)
+            
+            transactions = generate_visa_transactions(
+                n_transactions=n_transactions,
+                anomaly_rate=anomaly_rate,
+                random_seed=seed
+            )
         
         # Run engine
         eng = get_engine(use_ai=use_ai)
