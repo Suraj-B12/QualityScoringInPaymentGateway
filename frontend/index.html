@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DQS Engine - Data Quality Scoring Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">DQS</div>
+                    <div class="logo-text">
+                        <h1>Data Quality Scoring Engine</h1>
+                        <p>15-Layer Payment Gateway Quality Assessment</p>
+                    </div>
+                </div>
+                <div class="header-status">
+                    <span class="status-dot"></span>
+                    <span id="apiStatus">Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Control Panel -->
+            <section class="control-panel glass-card">
+                <h2>Pipeline Configuration</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label for="txnCount">Transaction Count</label>
+                        <input type="range" id="txnCount" min="10" max="200" value="50" oninput="updateSlider('txnCount', 'txnCountValue')">
+                        <span id="txnCountValue" class="slider-value">50</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="anomalyRate">Anomaly Rate (%)</label>
+                        <input type="range" id="anomalyRate" min="0" max="50" value="15" oninput="updateSlider('anomalyRate', 'anomalyRateValue')">
+                        <span id="anomalyRateValue" class="slider-value">15%</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="useAI">Enable Gemini AI</label>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="useAI">
+                            <label for="useAI"></label>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <button id="runPipelineBtn" class="btn btn-primary" onclick="runPipeline()">
+                            <span class="btn-icon">▶</span>
+                            Run Pipeline
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Phase Pipeline Visualization -->
+            <section class="phase-pipeline glass-card">
+                <h2>Pipeline Phases</h2>
+                <div class="pipeline-flow">
+                    <div class="phase phase-1" data-phase="1">
+                        <div class="phase-header">
+                            <span class="phase-number">1</span>
+                            <span class="phase-name">Foundation</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="1">L1: Input Contract</div>
+                            <div class="layer" data-layer="2">L2: Input Validation</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-2" data-phase="2">
+                        <div class="phase-header">
+                            <span class="phase-number">2</span>
+                            <span class="phase-name">Features</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="3">L3: Feature Extraction</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-3" data-phase="3">
+                        <div class="phase-header">
+                            <span class="phase-number">3</span>
+                            <span class="phase-name">Deterministic</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="4.1">L4.1: Structural</div>
+                            <div class="layer" data-layer="4.2">L4.2: Compliance</div>
+                            <div class="layer" data-layer="4.3">L4.3: Semantic</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-4" data-phase="4">
+                        <div class="phase-header">
+                            <span class="phase-number">4</span>
+                            <span class="phase-name">AI Inference</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer ai-layer" data-layer="4.4">L4.4: Anomaly ML</div>
+                            <div class="layer ai-layer" data-layer="4.5">L4.5: GenAI</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-5" data-phase="5">
+                        <div class="phase-header">
+                            <span class="phase-number">5</span>
+                            <span class="phase-name">Output</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="5">L5: Contract</div>
+                            <div class="layer" data-layer="6">L6: Stability</div>
+                            <div class="layer" data-layer="7">L7: Conflicts</div>
+                            <div class="layer" data-layer="8">L8: Confidence</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-6" data-phase="6">
+                        <div class="phase-header">
+                            <span class="phase-number">6</span>
+                            <span class="phase-name">Decision</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="9">L9: Decision Gate</div>
+                            <div class="layer" data-layer="10">L10: Responsibility</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="phase phase-7" data-phase="7">
+                        <div class="phase-header">
+                            <span class="phase-number">7</span>
+                            <span class="phase-name">Logging</span>
+                        </div>
+                        <div class="phase-layers">
+                            <div class="layer" data-layer="11">L11: Trace</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Dashboard -->
+            <section class="results-dashboard" id="resultsSection" style="display: none;">
+                <!-- Summary Cards -->
+                <div class="summary-cards">
+                    <div class="summary-card card-success">
+                        <div class="card-icon">✓</div>
+                        <div class="card-content">
+                            <span class="card-value" id="safeCount">0</span>
+                            <span class="card-label">Safe to Use</span>
+                        </div>
+                    </div>
+                    <div class="summary-card card-warning">
+                        <div class="card-icon">⚠</div>
+                        <div class="card-content">
+                            <span class="card-value" id="reviewCount">0</span>
+                            <span class="card-label">Review Required</span>
+                        </div>
+                    </div>
+                    <div class="summary-card card-danger">
+                        <div class="card-icon">!</div>
+                        <div class="card-content">
+                            <span class="card-value" id="escalateCount">0</span>
+                            <span class="card-label">Escalate</span>
+                        </div>
+                    </div>
+                    <div class="summary-card card-neutral">
+                        <div class="card-icon">×</div>
+                        <div class="card-content">
+                            <span class="card-value" id="rejectedCount">0</span>
+                            <span class="card-label">Rejected</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Metrics Row -->
+                <div class="metrics-row">
+                    <div class="metric-card glass-card">
+                        <div class="metric-circle" id="qualityCircle">
+                            <svg viewBox="0 0 100 100">
+                                <circle class="metric-bg" cx="50" cy="50" r="45"></circle>
+                                <circle class="metric-fill" cx="50" cy="50" r="45" id="qualityFill"></circle>
+                            </svg>
+                            <div class="metric-value" id="qualityRate">0%</div>
+                        </div>
+                        <span class="metric-label">Quality Rate</span>
+                    </div>
+                    <div class="metric-card glass-card">
+                        <div class="metric-circle" id="dqsCircle">
+                            <svg viewBox="0 0 100 100">
+                                <circle class="metric-bg" cx="50" cy="50" r="45"></circle>
+                                <circle class="metric-fill dqs-fill" cx="50" cy="50" r="45" id="dqsFill"></circle>
+                            </svg>
+                            <div class="metric-value" id="avgDqs">0</div>
+                        </div>
+                        <span class="metric-label">Average DQS</span>
+                    </div>
+                    <div class="metric-card glass-card">
+                        <div class="metric-info">
+                            <span class="metric-big" id="totalRecords">0</span>
+                            <span class="metric-sub">records</span>
+                        </div>
+                        <span class="metric-label">Total Processed</span>
+                    </div>
+                    <div class="metric-card glass-card">
+                        <div class="metric-info">
+                            <span class="metric-big" id="duration">0</span>
+                            <span class="metric-sub">ms</span>
+                        </div>
+                        <span class="metric-label">Total Duration</span>
+                    </div>
+                </div>
+
+                <!-- Layer Details -->
+                <div class="layer-details glass-card">
+                    <h2>Layer Execution Details</h2>
+                    <div class="layer-table-container">
+                        <table class="layer-table">
+                            <thead>
+                                <tr>
+                                    <th>Layer</th>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                    <th>Duration</th>
+                                    <th>Checks</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="layerTableBody">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Reports Section -->
+                <div class="reports-section">
+                    <div class="report-card glass-card">
+                        <h3>Decision Report</h3>
+                        <pre id="decisionReport" class="report-content"></pre>
+                    </div>
+                    <div class="report-card glass-card">
+                        <h3>Execution Log</h3>
+                        <pre id="executionReport" class="report-content"></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Loading Overlay -->
+            <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+                <div class="loading-content">
+                    <div class="loading-spinner"></div>
+                    <div class="loading-text">Processing <span id="loadingLayer">Layer 1</span>...</div>
+                    <div class="loading-progress">
+                        <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>DQS Engine v1.0 | 15 Layers | 7 Phases | "Rules Enforce, ML Informs, Humans Decide"</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
