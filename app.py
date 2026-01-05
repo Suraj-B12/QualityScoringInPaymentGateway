@@ -165,9 +165,50 @@ def run_pipeline():
                 "error": "No valid transactions to process"
             }), 400
         
-        # Run engine
-        eng = get_engine(use_ai=use_ai)
-        result = eng.run(transactions)
+        # Run engine with error handling that preserves import metadata
+        try:
+            eng = get_engine(use_ai=use_ai)
+            result = eng.run(transactions)
+        except Exception as engine_error:
+            # Engine failed - provide helpful error message with schema info
+            error_msg = str(engine_error)
+            
+            # Add schema compliance context if data was imported
+            if import_metadata:
+                compliance = import_metadata.get('compliance_score', 0)
+                missing = import_metadata.get('missing_fields', [])[:5]
+                warnings = import_metadata.get('warnings', [])
+                
+                error_msg = f"Pipeline execution failed: {error_msg}\n\n"
+                error_msg += f"DATA FORMAT ISSUE DETECTED:\n"
+                error_msg += f"Schema Compliance: {compliance:.0f}%\n"
+                
+                if missing:
+                    error_msg += f"Missing required fields: {', '.join(missing)}\n"
+                
+                if compliance < 80:
+                    error_msg += "\nYour data does not follow the required VISA transaction format.\n"
+                    error_msg += "Please ensure your CSV/JSON includes these required fields:\n"
+                    error_msg += "- transaction.transaction_id, transaction.amount, transaction.currency\n"
+                    error_msg += "- card.network, card.card_type\n"
+                    error_msg += "- merchant.merchant_id, merchant.country\n"
+                    error_msg += "- customer.customer_id\n"
+                    error_msg += "- fraud.risk_score\n"
+                
+                for w in warnings:
+                    error_msg += f"\nWarning: {w}"
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "import_metadata": {
+                    "source": import_metadata.get("source", "unknown") if import_metadata else "unknown",
+                    "compliance_score": import_metadata.get("compliance_score", 0) if import_metadata else 100,
+                    "is_standard_format": import_metadata.get("is_standard_format", True) if import_metadata else True,
+                    "missing_fields": import_metadata.get("missing_fields", [])[:10] if import_metadata else [],
+                    "warnings": import_metadata.get("warnings", []) if import_metadata else []
+                } if import_metadata else None
+            }), 400
         
         # Build response
         layer_timings = []

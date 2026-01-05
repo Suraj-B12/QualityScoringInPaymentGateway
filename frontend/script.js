@@ -403,16 +403,129 @@ async function runPipeline() {
             results.scrollIntoView({ behavior: 'smooth' });
             showToast('success', `Analyzed ${data.total_records} records successfully`);
         } else {
-            throw new Error(data.error || 'Pipeline execution failed');
+            // Check if this is a schema compliance error
+            if (data.import_metadata && data.import_metadata.compliance_score < 80) {
+                showSchemaError(data.error, data.import_metadata);
+            } else {
+                throw new Error(data.error || 'Pipeline execution failed');
+            }
         }
     } catch (error) {
         console.error('Pipeline error:', error);
-        showToast('error', error.message);
+        showToast('error', error.message.split('\n')[0]);  // Show first line only in toast
+
+        // If error message is long, show in modal
+        if (error.message.length > 100) {
+            showErrorModal('Pipeline Error', error.message);
+        }
         resetLayers();
     } finally {
         overlay.style.display = 'none';
         btn.disabled = false;
     }
+}
+
+// Show schema compliance error in modal
+function showSchemaError(errorMsg, metadata) {
+    const modal = document.getElementById('layerModal');
+    const title = document.getElementById('modalLayerTitle');
+    const body = document.getElementById('modalLayerBody');
+
+    title.textContent = 'Data Format Error';
+
+    const compliance = metadata.compliance_score || 0;
+    const missing = metadata.missing_fields || [];
+    const warnings = metadata.warnings || [];
+
+    body.innerHTML = `
+        <div class="modal-section">
+            <h4>Schema Compliance Issue</h4>
+            <div class="detail-grid">
+                <div class="detail-item">
+                    <span class="detail-label">Compliance Score</span>
+                    <span class="status-tag-inline failed">${compliance.toFixed(0)}%</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Format Status</span>
+                    <span class="status-tag-inline failed">Non-Standard</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="modal-section">
+            <h4>Missing Required Fields</h4>
+            <ul style="margin: 10px 0; padding-left: 20px; color: var(--text-secondary);">
+                ${missing.slice(0, 10).map(f => `<li>${f}</li>`).join('')}
+            </ul>
+        </div>
+        
+        <div class="modal-section">
+            <h4>Required VISA Format</h4>
+            <div class="fix-content" style="background: var(--surface-alt); padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px;">
+<pre>{
+  "transaction": {
+    "transaction_id": "txn_001",
+    "amount": 5000.00,
+    "currency": "INR",
+    "timestamp": "2026-01-05T10:00:00Z"
+  },
+  "card": {
+    "network": "VISA",
+    "card_type": "credit"
+  },
+  "merchant": {
+    "merchant_id": "MID_1234",
+    "merchant_category_code": "5812",
+    "country": "IN"
+  },
+  "customer": {
+    "customer_id": "cust_1234"
+  },
+  "fraud": {
+    "risk_score": 25
+  }
+}</pre>
+            </div>
+        </div>
+        
+        ${warnings.length > 0 ? `
+        <div class="modal-section">
+            <h4>Warnings</h4>
+            <ul style="margin: 10px 0; padding-left: 20px; color: var(--warning);">
+                ${warnings.map(w => `<li>${w}</li>`).join('')}
+            </ul>
+        </div>
+        ` : ''}
+        
+        <div class="modal-section">
+            <p style="color: var(--text-secondary);">
+                Please reformat your data to match the VISA transaction schema, or use the "Generate Sample" option to see the expected format.
+            </p>
+        </div>
+    `;
+
+    modal.classList.add('active');
+    showToast('error', 'Data format error - see details in popup');
+    resetLayers();
+}
+
+// Show generic error in modal
+function showErrorModal(title, message) {
+    const modal = document.getElementById('layerModal');
+    const modalTitle = document.getElementById('modalLayerTitle');
+    const body = document.getElementById('modalLayerBody');
+
+    modalTitle.textContent = title;
+
+    body.innerHTML = `
+        <div class="modal-section">
+            <div class="fix-content" style="background: var(--surface-alt); padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; white-space: pre-wrap;">
+${message}
+            </div>
+        </div>
+    `;
+
+    modal.classList.add('active');
 }
 
 function sleep(ms) {
@@ -932,6 +1045,134 @@ function exportToCSV() {
     }
 
     showToast('success', 'Export functionality ready');
+}
+
+// Download complete log file
+function downloadCompleteLog() {
+    if (!lastResults) {
+        showToast('error', 'No results to download');
+        return;
+    }
+
+    const data = lastResults;
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+    let log = '';
+
+    // Header
+    log += '================================================================================\n';
+    log += '                    DQS ENGINE - COMPLETE ANALYSIS LOG\n';
+    log += '================================================================================\n\n';
+    log += `Generated: ${now.toISOString()}\n`;
+    log += `Batch ID: ${data.batch_id || 'N/A'}\n`;
+    log += `Execution ID: ${data.execution_id || 'N/A'}\n\n`;
+
+    // Summary
+    log += '--------------------------------------------------------------------------------\n';
+    log += '                              EXECUTIVE SUMMARY\n';
+    log += '--------------------------------------------------------------------------------\n\n';
+    log += `Total Records Analyzed: ${data.total_records}\n`;
+    log += `Total Execution Time: ${Math.round(data.total_duration_ms)}ms\n\n`;
+    log += `Quality Rate: ${data.quality_rate}%\n`;
+    log += `Average DQS: ${data.average_dqs.toFixed(1)}/100\n\n`;
+    log += `Safe to Process: ${data.safe_count}\n`;
+    log += `Review Required: ${data.review_count}\n`;
+    log += `Escalate: ${data.escalate_count}\n`;
+    log += `Rejected: ${data.rejected_count}\n\n`;
+
+    // Layer Execution Details
+    log += '--------------------------------------------------------------------------------\n';
+    log += '                           LAYER EXECUTION DETAILS\n';
+    log += '--------------------------------------------------------------------------------\n\n';
+
+    if (data.layer_timings) {
+        data.layer_timings.forEach(t => {
+            const detail = data.layer_details?.[String(t.layer_id)] || {};
+            log += `Layer ${t.layer_id}: ${t.layer_name}\n`;
+            log += `  Status: ${t.status.toUpperCase()}\n`;
+            log += `  Duration: ${t.duration_ms.toFixed(2)}ms\n`;
+            log += `  Checks: ${detail.checks_passed || 0}/${detail.checks_performed || 0} passed\n`;
+            if (detail.issues_count > 0) {
+                log += `  Issues: ${detail.issues_count}\n`;
+            }
+            if (detail.warnings_count > 0) {
+                log += `  Warnings: ${detail.warnings_count}\n`;
+            }
+            log += '\n';
+        });
+    }
+
+    // Records Requiring Action
+    const actionCount = (data.review_count || 0) + (data.escalate_count || 0);
+    if (actionCount > 0) {
+        log += '--------------------------------------------------------------------------------\n';
+        log += '                        RECORDS REQUIRING ACTION\n';
+        log += '--------------------------------------------------------------------------------\n\n';
+
+        const records = extractActionRecords(data);
+        records.forEach((rec, i) => {
+            log += `[${i + 1}] ${rec.id}\n`;
+            log += `    Action: ${rec.action}\n`;
+            log += `    Reason: ${rec.reason}\n`;
+            log += `    Recommended Fix:\n`;
+            const fix = generateFix(rec, aiEnabled);
+            fix.split('\n').forEach(line => {
+                log += `      ${line.trim()}\n`;
+            });
+            log += '\n';
+        });
+    }
+
+    // Import Metadata Warnings
+    if (data.import_metadata && data.import_metadata.warnings?.length > 0) {
+        log += '--------------------------------------------------------------------------------\n';
+        log += '                          DATA FORMAT WARNINGS\n';
+        log += '--------------------------------------------------------------------------------\n\n';
+        log += `Schema Compliance: ${data.import_metadata.compliance_score}%\n\n`;
+        data.import_metadata.warnings.forEach(w => {
+            log += `Warning: ${w}\n\n`;
+        });
+        if (data.import_metadata.missing_fields?.length > 0) {
+            log += 'Missing Fields:\n';
+            data.import_metadata.missing_fields.forEach(f => {
+                log += `  - ${f}\n`;
+            });
+            log += '\n';
+        }
+    }
+
+    // Decision Report
+    log += '--------------------------------------------------------------------------------\n';
+    log += '                            DECISION REPORT\n';
+    log += '--------------------------------------------------------------------------------\n\n';
+
+    // Clean the decision report of HTML tags
+    let cleanReport = (data.decision_report || 'No report available')
+        .replace(/<[^>]*>/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/\*/g, '')
+        .replace(/#{1,6}\s/g, '')
+        .replace(/`/g, '');
+    log += cleanReport + '\n\n';
+
+    // Footer
+    log += '================================================================================\n';
+    log += '                              END OF REPORT\n';
+    log += '================================================================================\n';
+
+    // Download
+    const blob = new Blob([log], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dqs_analysis_log_${timestamp}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast('success', 'Log file downloaded');
 }
 
 // Copy to clipboard
