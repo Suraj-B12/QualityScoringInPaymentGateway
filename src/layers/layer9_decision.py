@@ -279,6 +279,17 @@ class DecisionGateLayer:
             )
         
         # ================================================================
+        # RULE 2.5: Very high anomaly score -> ESCALATE
+        # ================================================================
+        if r.anomaly_score > 0.9:
+            return (
+                Action.ESCALATE,
+                f"Critical anomaly detected ({r.anomaly_score:.2f})",
+                r.anomaly_flags[:3] if r.anomaly_flags else ["Extreme anomaly score"],
+                "Very high anomaly score indicates potential fraud or critical data issue",
+            )
+        
+        # ================================================================
         # RULE 3: Semantic violations -> ESCALATE
         # ================================================================
         if r.semantic_violations:
@@ -287,6 +298,17 @@ class DecisionGateLayer:
                 "Business rule violations detected",
                 r.semantic_violations[:3],
                 "Critical business rule violations",
+            )
+        
+        # ================================================================
+        # RULE 3.5: Multiple strong anomaly indicators -> ESCALATE
+        # ================================================================
+        if r.is_anomaly and len(r.anomaly_flags) >= 3 and r.anomaly_score > 0.7:
+            return (
+                Action.ESCALATE,
+                f"Multiple anomaly flags ({len(r.anomaly_flags)} flags, score: {r.anomaly_score:.2f})",
+                r.anomaly_flags[:4],
+                "Multiple anomaly indicators suggest critical review needed",
             )
         
         # ================================================================
