@@ -104,13 +104,22 @@ function switchTab(tab) {
     document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.toggle('active', content.id === `tab-${tab}`);
     });
+
+    // Initialize Live Feed when tab is activated
+    if (tab === 'live') {
+        onLiveTabActivated();
+    }
 }
 
 // Slider update
 function updateSlider(id, valueId) {
     const slider = document.getElementById(id);
     const valueEl = document.getElementById(valueId);
-    valueEl.textContent = id === 'anomalyRate' ? slider.value + '%' : slider.value;
+    if (id === 'anomalyRate' || id === 'liveAnomalyRate') {
+        valueEl.textContent = slider.value + '%';
+    } else {
+        valueEl.textContent = slider.value;
+    }
 }
 
 // AI Toggle
@@ -1207,4 +1216,410 @@ function showToast(type, message) {
     setTimeout(() => {
         toast.remove();
     }, 4000);
+}
+
+// ============================================================
+// LIVE FEED - WebSocket Streaming
+// ============================================================
+
+let socket = null;
+let liveStreamActive = false;
+let liveTransactionLogs = [];
+const MAX_LOG_ENTRIES = 100;
+
+// Initialize Live Feed socket connection
+function initLiveSocket() {
+    if (typeof io === 'undefined') {
+        console.warn('Socket.IO not loaded');
+        return null;
+    }
+
+    if (socket && socket.connected) {
+        return socket;
+    }
+
+    socket = io(window.location.origin, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        reconnectionAttempts: 10
+    });
+
+    // Connection events
+    socket.on('connect', () => {
+        console.log('Live socket connected');
+        updateLiveConnectionStatus('connected');
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Live socket disconnected');
+        updateLiveConnectionStatus('disconnected');
+        liveStreamActive = false;
+        updateStreamButtons();
+    });
+
+    socket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+        updateLiveConnectionStatus('disconnected');
+    });
+
+    socket.on('reconnecting', () => {
+        updateLiveConnectionStatus('connecting');
+    });
+
+    // Custom events
+    socket.on('connected', (data) => {
+        console.log('Server acknowledged connection:', data);
+        if (data.stats) {
+            updateLiveStats(data.stats);
+        }
+    });
+
+    socket.on('stream_status', (data) => {
+        console.log('Stream status:', data.status);
+        if (data.status === 'started') {
+            liveStreamActive = true;
+            showToast('success', 'Live stream started');
+        } else if (data.status === 'stopped') {
+            liveStreamActive = false;
+            showToast('info', 'Live stream stopped');
+        } else if (data.status === 'already_running') {
+            liveStreamActive = true;
+            showToast('info', 'Stream already running');
+        }
+        updateStreamButtons();
+    });
+
+    socket.on('transaction_result', (data) => {
+        handleLiveTransaction(data);
+    });
+
+    return socket;
+}
+
+// Update connection status UI
+function updateLiveConnectionStatus(status) {
+    const statusEl = document.getElementById('liveConnectionStatus');
+    if (!statusEl) return;
+
+    const dot = statusEl.querySelector('.status-dot');
+    const text = statusEl.querySelector('.status-text');
+
+    dot.className = 'status-dot ' + status;
+
+    if (status === 'connected') {
+        text.textContent = 'Connected';
+    } else if (status === 'connecting') {
+        text.textContent = 'Connecting...';
+    } else {
+        text.textContent = 'Disconnected';
+    }
+}
+
+// Update stream control buttons
+function updateStreamButtons() {
+    const startBtn = document.getElementById('startStreamBtn');
+    const stopBtn = document.getElementById('stopStreamBtn');
+
+    if (startBtn && stopBtn) {
+        startBtn.disabled = liveStreamActive;
+        stopBtn.disabled = !liveStreamActive;
+    }
+}
+
+// Start live stream (auto-starts when tab opens)
+function startLiveStream() {
+    const sock = initLiveSocket();
+    if (!sock) {
+        console.warn('WebSocket not available');
+        return;
+    }
+
+    // Send start command
+    sock.emit('start_stream', {});
+
+    // Clear any empty state
+    const logContainer = document.getElementById('liveLogContainer');
+    const emptyState = logContainer?.querySelector('.live-log-empty');
+    if (emptyState) {
+        emptyState.style.display = 'none';
+    }
+}
+
+// Stop live stream
+function stopLiveStream() {
+    if (socket && socket.connected) {
+        socket.emit('stop_stream');
+    }
+}
+
+// Handle incoming live transaction
+function handleLiveTransaction(data) {
+    const { transaction, result, stats } = data;
+
+    // Update stats
+    if (stats) {
+        updateLiveStats(stats);
+    }
+
+    // Add to log
+    addLiveLogEntry(transaction, result);
+
+    // Update counter
+    const counterEl = document.getElementById('liveTransactionCount');
+    if (counterEl && stats) {
+        counterEl.textContent = stats.total;
+    }
+}
+
+// Update live stats display
+function updateLiveStats(stats) {
+    const safeEl = document.getElementById('liveSafeCount');
+    const reviewEl = document.getElementById('liveReviewCount');
+    const escalateEl = document.getElementById('liveEscalateCount');
+    const rejectedEl = document.getElementById('liveRejectedCount');
+
+    if (safeEl) safeEl.textContent = stats.safe || 0;
+    if (reviewEl) reviewEl.textContent = stats.review || 0;
+    if (escalateEl) escalateEl.textContent = stats.escalate || 0;
+    if (rejectedEl) rejectedEl.textContent = stats.rejected || 0;
+}
+
+// Add entry to live log
+function addLiveLogEntry(transaction, result) {
+    const logContainer = document.getElementById('liveLogContainer');
+    if (!logContainer) return;
+
+    // Store log
+    liveTransactionLogs.unshift({ transaction, result, timestamp: new Date().toISOString() });
+    if (liveTransactionLogs.length > MAX_LOG_ENTRIES) {
+        liveTransactionLogs.pop();
+    }
+
+    // Determine action class
+    let actionClass = 'safe';
+    let actionText = 'SAFE';
+    if (result.action === 'REVIEW_REQUIRED') {
+        actionClass = 'review';
+        actionText = 'REVIEW';
+    } else if (result.action === 'ESCALATE') {
+        actionClass = 'escalate';
+        actionText = 'ESCALATE';
+    } else if (result.action === 'NO_ACTION') {
+        actionClass = 'rejected';
+        actionText = 'REJECTED';
+    }
+
+    // Create entry element
+    const entry = document.createElement('div');
+    entry.className = `live-log-entry ${actionClass}`;
+
+    const time = new Date().toLocaleTimeString();
+    const txnId = result.transaction_id || transaction?.transaction?.transaction_id || 'N/A';
+    const amount = transaction?.transaction?.amount || 0;
+    const dqs = result.dqs_score || 100;
+    const reason = result.reason || 'Processed successfully';
+
+    entry.innerHTML = `
+        <span class="log-time">${time}</span>
+        <span class="log-txn-id">${txnId}</span>
+        <span class="log-amount">₹${amount.toLocaleString()}</span>
+        <span class="log-dqs">DQS: ${dqs.toFixed(0)}</span>
+        <span class="log-action ${actionClass}">${actionText}</span>
+        <span class="log-reason">${reason}</span>
+    `;
+
+    // Insert at top
+    logContainer.insertBefore(entry, logContainer.firstChild);
+
+    // Limit visible entries
+    const entries = logContainer.querySelectorAll('.live-log-entry');
+    if (entries.length > MAX_LOG_ENTRIES) {
+        entries[entries.length - 1].remove();
+    }
+}
+
+// Set API key for live data source
+async function setLiveApiKey() {
+    const apiKey = document.getElementById('liveApiKey')?.value || '';
+
+    if (!apiKey) {
+        showToast('error', 'Please enter an API key');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/live/set-api-key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: apiKey })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            showToast('success', 'API key configured');
+            document.getElementById('liveApiKey').value = '';
+        } else {
+            showToast('error', 'Failed to set API key');
+        }
+    } catch (error) {
+        showToast('error', 'Error setting API key');
+    }
+}
+
+// Clear live logs
+async function clearLiveLogs() {
+    try {
+        const response = await fetch('/api/live/clear', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.success) {
+            // Clear UI
+            const logContainer = document.getElementById('liveLogContainer');
+            if (logContainer) {
+                logContainer.innerHTML = `
+                    <div class="live-log-empty">
+                        <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                            <circle cx="12" cy="12" r="2" />
+                            <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" />
+                        </svg>
+                        <p>Start the stream to see live transactions</p>
+                    </div>
+                `;
+            }
+
+            // Reset stats
+            updateLiveStats({ safe: 0, review: 0, escalate: 0, rejected: 0, total: 0 });
+            document.getElementById('liveTransactionCount').textContent = '0';
+
+            liveTransactionLogs = [];
+            showToast('success', 'Logs cleared');
+        }
+    } catch (error) {
+        showToast('error', 'Failed to clear logs');
+    }
+}
+
+// Download filtered logs (defaults to all data if no time specified)
+async function downloadFilteredLogs() {
+    const startInput = document.getElementById('logStartTime');
+    const endInput = document.getElementById('logEndTime');
+
+    // Time-only input - convert to today's date with that time
+    let startTime = null;
+    let endTime = null;
+
+    const today = new Date().toISOString().split('T')[0];
+    if (startInput?.value) {
+        startTime = new Date(`${today}T${startInput.value}:00`).toISOString();
+    }
+    if (endInput?.value) {
+        endTime = new Date(`${today}T${endInput.value}:00`).toISOString();
+    }
+
+    try {
+        let url = '/api/live/logs';
+        const params = new URLSearchParams();
+        if (startTime) params.append('start', startTime);
+        if (endTime) params.append('end', endTime);
+        if (params.toString()) url += '?' + params.toString();
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!data.success || !data.logs || data.logs.length === 0) {
+            showToast('info', 'No logs found. Run the stream first.');
+            return;
+        }
+
+        // Generate log text
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+        let log = '';
+        log += '================================================================================\n';
+        log += '                    DQS ENGINE - LIVE STREAM LOGS\n';
+        log += '================================================================================\n\n';
+        log += `Downloaded: ${now.toISOString()}\n`;
+        if (startTime) log += `Start Filter: ${startTime}\n`;
+        if (endTime) log += `End Filter: ${endTime}\n`;
+        log += `Total Records: ${data.logs.length}\n\n`;
+
+        // Stats
+        log += '--------------------------------------------------------------------------------\n';
+        log += '                              SUMMARY\n';
+        log += '--------------------------------------------------------------------------------\n\n';
+        log += `Safe: ${data.stats.safe}\n`;
+        log += `Review: ${data.stats.review}\n`;
+        log += `Escalate: ${data.stats.escalate}\n`;
+        log += `Rejected: ${data.stats.rejected}\n`;
+        log += `Average DQS: ${data.stats.avg_dqs}\n\n`;
+
+        // Transaction log
+        log += '--------------------------------------------------------------------------------\n';
+        log += '                          TRANSACTION LOG\n';
+        log += '--------------------------------------------------------------------------------\n\n';
+
+        data.logs.forEach((entry, i) => {
+            log += `[${i + 1}] ${entry.timestamp}\n`;
+            log += `    ID: ${entry.transaction_id}\n`;
+            log += `    Amount: Rs ${entry.amount}\n`;
+            log += `    Status: ${entry.status}\n`;
+            log += `    DQS: ${entry.dqs_score}\n`;
+            log += `    Action: ${entry.action}\n`;
+            if (entry.flags && entry.flags.length > 0) {
+                log += `    Flags: ${entry.flags.join(', ')}\n`;
+            }
+            log += `    Processing Time: ${entry.processing_time_ms}ms\n\n`;
+        });
+
+        log += '================================================================================\n';
+        log += '                              END OF LOG\n';
+        log += '================================================================================\n';
+
+        // Download
+        const blob = new Blob([log], { type: 'text/plain;charset=utf-8' });
+        const url2 = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url2;
+        a.download = `live_stream_log_${timestamp}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url2);
+
+        showToast('success', `Downloaded ${data.logs.length} log entries`);
+
+    } catch (error) {
+        showToast('error', 'Failed to download logs');
+        console.error(error);
+    }
+}
+
+// Initialize socket when switching to Live tab - AUTO-STARTS streaming
+function onLiveTabActivated() {
+    // Auto-start streaming when user opens the Live Feed tab
+    const sock = initLiveSocket();
+
+    // Fetch current stats first
+    fetch('/api/live/stats')
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                updateLiveStats(data.stats);
+                document.getElementById('liveTransactionCount').textContent = data.stats.total || 0;
+
+                // Auto-start if not already streaming
+                if (!data.streaming && sock) {
+                    setTimeout(() => {
+                        startLiveStream();
+                    }, 500);
+                } else if (data.streaming) {
+                    updateLiveConnectionStatus('connected');
+                    liveStreamActive = true;
+                }
+            }
+        })
+        .catch(err => console.error('Failed to fetch live stats:', err));
 }

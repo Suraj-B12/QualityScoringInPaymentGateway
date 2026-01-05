@@ -7,6 +7,7 @@
     <title>DQS Engine - Enterprise Data Quality Platform</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 
 <body>
@@ -73,6 +74,14 @@
                             <polyline points="13 2 13 9 20 9" />
                         </svg>
                         CSV Upload
+                    </button>
+                    <button class="tab-btn" data-tab="live" onclick="switchTab('live')">
+                        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="2" />
+                            <path
+                                d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" />
+                        </svg>
+                        Live Feed
                     </button>
                 </div>
 
@@ -167,6 +176,74 @@
                                     <line x1="6" y1="6" x2="18" y2="18" />
                                 </svg>
                             </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Feed Tab -->
+                <div class="tab-content" id="tab-live">
+                    <div class="live-feed-container">
+                        <!-- Connection Status -->
+                        <div class="live-status-bar">
+                            <div class="connection-status" id="liveConnectionStatus">
+                                <span class="status-dot disconnected"></span>
+                                <span class="status-text">Connecting...</span>
+                            </div>
+                            <div class="live-counter">
+                                <span id="liveTransactionCount">0</span> transactions processed
+                            </div>
+                        </div>
+
+                        <!-- Live Stats -->
+                        <div class="live-stats-grid">
+                            <div class="live-stat-card safe">
+                                <div class="stat-value" id="liveSafeCount">0</div>
+                                <div class="stat-label">Safe</div>
+                            </div>
+                            <div class="live-stat-card review">
+                                <div class="stat-value" id="liveReviewCount">0</div>
+                                <div class="stat-label">Review</div>
+                            </div>
+                            <div class="live-stat-card escalate">
+                                <div class="stat-value" id="liveEscalateCount">0</div>
+                                <div class="stat-label">Escalate</div>
+                            </div>
+                            <div class="live-stat-card rejected">
+                                <div class="stat-value" id="liveRejectedCount">0</div>
+                                <div class="stat-label">Rejected</div>
+                            </div>
+                        </div>
+
+                        <!-- Live Transaction Log -->
+                        <div class="live-log-section">
+                            <div class="live-log-header">
+                                <h4>Transaction Log</h4>
+                                <div class="log-download-controls">
+                                    <input type="time" id="logStartTime" class="time-input" placeholder="From">
+                                    <span class="datetime-separator">to</span>
+                                    <input type="time" id="logEndTime" class="time-input" placeholder="To">
+                                    <button class="btn-sm" onclick="downloadFilteredLogs()">
+                                        <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="2">
+                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                            <polyline points="7 10 12 15 17 10" />
+                                            <line x1="12" y1="15" x2="12" y2="3" />
+                                        </svg>
+                                        Download Logs
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="live-log-container" id="liveLogContainer">
+                                <div class="live-log-empty">
+                                    <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="1">
+                                        <circle cx="12" cy="12" r="2" />
+                                        <path
+                                            d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" />
+                                    </svg>
+                                    <p>Waiting for live transactions...</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -3,15 +3,26 @@ Flask API Server for DQS Engine Frontend
 
 Provides REST endpoints to interact with the Data Quality Scoring Engine.
 Supports standard VISA format and graceful handling of non-standard CSV/JSON.
+Includes WebSocket support for real-time streaming.
 """
 import os
 import sys
 import json
 import math
+import time
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import numpy as np
+
+# SocketIO imports
+try:
+    from flask_socketio import SocketIO, emit
+    SOCKETIO_AVAILABLE = True
+except ImportError:
+    SOCKETIO_AVAILABLE = False
+    print("Warning: flask-socketio not installed. Live streaming disabled.")
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,6 +31,7 @@ from src.dqs_engine import DQSEngine
 from src.data_generator import generate_visa_transactions
 from src.csv_adapter import adapt_csv_to_visa, adapt_flat_json_to_visa
 from src.config import Action
+from src.live_data_generator import LiveDataGenerator, LiveLogStorage
 
 
 class SafeJSONEncoder(json.JSONEncoder):
@@ -59,10 +71,23 @@ def sanitize_for_json(obj):
 
 app = Flask(__name__, static_folder='frontend', static_url_path='')
 app.json_encoder = SafeJSONEncoder
+app.config['SECRET_KEY'] = 'dqs-engine-secret-key'
 CORS(app)
 
-# Global engine instance
+# Initialize SocketIO if available
+if SOCKETIO_AVAILABLE:
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+else:
+    socketio = None
+
+# Global instances
 engine = None
+live_generator = LiveDataGenerator(anomaly_rate=0.15)
+log_storage = LiveLogStorage(log_file="live_stream_logs.json")
+
+# Streaming state
+streaming_active = False
+streaming_thread = None
 
 
 def get_engine(use_ai=False):
@@ -369,9 +394,218 @@ def get_schema():
     return jsonify(schema)
 
 
+# ============================================================
+# LIVE STREAMING ENDPOINTS
+# ============================================================
+
+@app.route('/api/live/set-api-key', methods=['POST'])
+def set_live_api_key():
+    """Set API key for live data source."""
+    data = request.json or {}
+    api_key = data.get('api_key', '')
+    live_generator.set_api_key(api_key)
+    return jsonify({"success": True, "message": "API key configured"})
+
+
+@app.route('/api/live/set-anomaly-rate', methods=['POST'])
+def set_live_anomaly_rate():
+    """Set anomaly rate for generated data."""
+    data = request.json or {}
+    rate = data.get('rate', 0.15)
+    live_generator.set_anomaly_rate(rate)
+    return jsonify({"success": True, "anomaly_rate": rate})
+
+
+@app.route('/api/live/logs', methods=['GET'])
+def get_live_logs():
+    """Get filtered live stream logs."""
+    start_time = request.args.get('start')
+    end_time = request.args.get('end')
+    
+    logs = log_storage.get_logs(start_time, end_time)
+    stats = log_storage.get_stats()
+    
+    return jsonify({
+        "success": True,
+        "logs": logs,
+        "stats": stats,
+        "count": len(logs)
+    })
+
+
+@app.route('/api/live/stats', methods=['GET'])
+def get_live_stats():
+    """Get current live stream statistics."""
+    return jsonify({
+        "success": True,
+        "stats": log_storage.get_stats(),
+        "streaming": streaming_active
+    })
+
+
+@app.route('/api/live/clear', methods=['POST'])
+def clear_live_logs():
+    """Clear all live stream logs."""
+    log_storage.clear_logs()
+    return jsonify({"success": True, "message": "Logs cleared"})
+
+
+def process_single_transaction(transaction):
+    """Process a single transaction through DQS engine."""
+    try:
+        start_time = time.time()
+        
+        # Flatten for DQS
+        flat_txn = live_generator.flatten_for_dqs(transaction)
+        
+        # Get or create engine
+        eng = get_engine(use_ai=False)
+        
+        # Process single record using run() method
+        pipeline_result = eng.run([flat_txn])
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Extract result from PipelineResult
+        if pipeline_result and pipeline_result.success:
+            # Get counts from pipeline result
+            if pipeline_result.safe_count > 0:
+                action = 'SAFE_TO_USE'
+            elif pipeline_result.escalate_count > 0:
+                action = 'ESCALATE'
+            elif pipeline_result.review_count > 0:
+                action = 'REVIEW_REQUIRED'
+            elif pipeline_result.rejected_count > 0:
+                action = 'NO_ACTION'
+            else:
+                action = 'SAFE_TO_USE'
+            
+            dqs_score = pipeline_result.average_dqs
+            reason = ''
+            flags = []
+            
+            # Try to get more details from decision report
+            if pipeline_result.decision_report:
+                # Parse basic info from report
+                if 'ESCALATE' in pipeline_result.decision_report.upper():
+                    action = 'ESCALATE'
+                elif 'REVIEW' in pipeline_result.decision_report.upper():
+                    action = 'REVIEW_REQUIRED'
+        else:
+            action = 'UNKNOWN'
+            dqs_score = 100
+            reason = ''
+            flags = pipeline_result.errors if pipeline_result else []
+        
+        return {
+            "success": True,
+            "transaction_id": transaction.get('transaction', {}).get('transaction_id'),
+            "dqs_score": dqs_score,
+            "action": action,
+            "reason": reason,
+            "flags": flags,
+            "processing_time_ms": round(processing_time, 2)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "transaction_id": transaction.get('transaction', {}).get('transaction_id'),
+            "dqs_score": 0,
+            "action": "ERROR",
+            "flags": [str(e)],
+            "processing_time_ms": 0
+        }
+
+
+def streaming_worker():
+    """Background worker for streaming transactions."""
+    global streaming_active
+    
+    while streaming_active:
+        try:
+            # Generate transaction
+            transaction = live_generator.generate_transaction()
+            
+            # Process it
+            result = process_single_transaction(transaction)
+            
+            # Store log
+            log_storage.add_log(transaction, result)
+            
+            # Emit via WebSocket
+            if socketio:
+                socketio.emit('transaction_result', {
+                    'transaction': transaction,
+                    'result': result,
+                    'stats': log_storage.get_stats()
+                })
+            
+            # Wait 1 second
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"Streaming error: {e}")
+            time.sleep(1)
+    
+    # Flush logs on stop
+    log_storage.flush()
+
+
+if SOCKETIO_AVAILABLE:
+    @socketio.on('connect')
+    def handle_connect():
+        """Handle client connection."""
+        emit('connected', {
+            'message': 'Connected to DQS Live Stream',
+            'stats': log_storage.get_stats()
+        })
+    
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        """Handle client disconnection."""
+        pass
+    
+    @socketio.on('start_stream')
+    def handle_start_stream(data=None):
+        """Start the live transaction stream."""
+        global streaming_active, streaming_thread
+        
+        if streaming_active:
+            emit('stream_status', {'status': 'already_running'})
+            return
+        
+        # Set anomaly rate if provided
+        if data and 'anomaly_rate' in data:
+            live_generator.set_anomaly_rate(data['anomaly_rate'])
+        
+        streaming_active = True
+        streaming_thread = threading.Thread(target=streaming_worker, daemon=True)
+        streaming_thread.start()
+        
+        emit('stream_status', {'status': 'started'})
+    
+    @socketio.on('stop_stream')
+    def handle_stop_stream():
+        """Stop the live transaction stream."""
+        global streaming_active
+        
+        streaming_active = False
+        emit('stream_status', {'status': 'stopped'})
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("  DQS ENGINE - Enterprise Data Quality Platform")
     print("  Open http://localhost:5000 in your browser")
+    if SOCKETIO_AVAILABLE:
+        print("  Live streaming: ENABLED (WebSocket)")
+    else:
+        print("  Live streaming: DISABLED (install flask-socketio)")
     print("=" * 60)
-    app.run(debug=True, port=5000)
+    
+    if SOCKETIO_AVAILABLE:
+        socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)
+    else:
+        app.run(debug=True, port=5000)
