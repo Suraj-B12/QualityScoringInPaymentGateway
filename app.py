@@ -5,6 +5,9 @@ Provides REST endpoints to interact with the Data Quality Scoring Engine.
 Supports standard VISA format and graceful handling of non-standard CSV/JSON.
 Includes WebSocket support for real-time streaming.
 """
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import sys
 import json
