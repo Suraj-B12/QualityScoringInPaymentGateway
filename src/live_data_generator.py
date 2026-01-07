@@ -282,17 +282,20 @@ class LiveDataGenerator:
             "settlement_fee": settlement.get("interchange_fee", 0) + settlement.get("gateway_fee", 0),
             "net_amount": settlement.get("net_amount"),
         }
+import threading
 
 
 class LiveLogStorage:
     """
     Persistent storage for live stream logs.
     Stores logs to a JSON file for persistence across restarts.
+    Thread-safe for concurrent access.
     """
     
     def __init__(self, log_file: str = "live_stream_logs.json"):
         self.log_file = log_file
         self.logs = []
+        self._lock = threading.Lock()
         self._load_logs()
     
     def _load_logs(self):
@@ -305,7 +308,7 @@ class LiveLogStorage:
                 self.logs = []
     
     def _save_logs(self):
-        """Save logs to file."""
+        """Save logs to file (must be called with lock held)."""
         try:
             with open(self.log_file, 'w') as f:
                 json.dump(self.logs, f, indent=2, default=str)
@@ -313,7 +316,7 @@ class LiveLogStorage:
             pass
     
     def add_log(self, transaction: Dict[str, Any], result: Dict[str, Any]):
-        """Add a processed transaction log."""
+        """Add a processed transaction log (thread-safe)."""
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "transaction_id": transaction.get("transaction", {}).get("transaction_id"),
@@ -326,64 +329,68 @@ class LiveLogStorage:
             "full_transaction": transaction,
             "full_result": result
         }
-        self.logs.append(log_entry)
-        
-        # Save every 10 logs to reduce I/O
-        if len(self.logs) % 10 == 0:
-            self._save_logs()
+        with self._lock:
+            self.logs.append(log_entry)
+            # Save every 10 logs to reduce I/O
+            if len(self.logs) % 10 == 0:
+                self._save_logs()
     
     def get_logs(self, start_time: str = None, end_time: str = None) -> list:
-        """Get logs filtered by time range."""
-        if not start_time and not end_time:
-            return self.logs
-        
-        filtered = []
-        for log in self.logs:
-            log_time = log.get("timestamp", "")
+        """Get logs filtered by time range (thread-safe)."""
+        with self._lock:
+            if not start_time and not end_time:
+                return list(self.logs)  # Return a copy
             
-            if start_time and log_time < start_time:
-                continue
-            if end_time and log_time > end_time:
-                continue
+            filtered = []
+            for log in self.logs:
+                log_time = log.get("timestamp", "")
+                
+                if start_time and log_time < start_time:
+                    continue
+                if end_time and log_time > end_time:
+                    continue
+                
+                filtered.append(log)
             
-            filtered.append(log)
-        
-        return filtered
+            return filtered
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get aggregate statistics."""
-        if not self.logs:
+        """Get aggregate statistics (thread-safe)."""
+        with self._lock:
+            if not self.logs:
+                return {
+                    "total": 0,
+                    "safe": 0,
+                    "review": 0,
+                    "escalate": 0,
+                    "rejected": 0,
+                    "avg_dqs": 0,
+                }
+            
+            safe = sum(1 for l in self.logs if l.get("action") == "SAFE_TO_USE")
+            review = sum(1 for l in self.logs if l.get("action") == "REVIEW_REQUIRED")
+            escalate = sum(1 for l in self.logs if l.get("action") == "ESCALATE")
+            rejected = sum(1 for l in self.logs if l.get("action") == "NO_ACTION")
+            
+            dqs_scores = [l.get("dqs_score", 100) for l in self.logs]
+            avg_dqs = sum(dqs_scores) / len(dqs_scores) if dqs_scores else 0
+            
             return {
-                "total": 0,
-                "safe": 0,
-                "review": 0,
-                "escalate": 0,
-                "rejected": 0,
-                "avg_dqs": 0,
+                "total": len(self.logs),
+                "safe": safe,
+                "review": review,
+                "escalate": escalate,
+                "rejected": rejected,
+                "avg_dqs": round(avg_dqs, 1),
             }
-        
-        safe = sum(1 for l in self.logs if l.get("action") == "SAFE_TO_USE")
-        review = sum(1 for l in self.logs if l.get("action") == "REVIEW_REQUIRED")
-        escalate = sum(1 for l in self.logs if l.get("action") == "ESCALATE")
-        rejected = sum(1 for l in self.logs if l.get("action") == "NO_ACTION")
-        
-        dqs_scores = [l.get("dqs_score", 100) for l in self.logs]
-        avg_dqs = sum(dqs_scores) / len(dqs_scores) if dqs_scores else 0
-        
-        return {
-            "total": len(self.logs),
-            "safe": safe,
-            "review": review,
-            "escalate": escalate,
-            "rejected": rejected,
-            "avg_dqs": round(avg_dqs, 1),
-        }
     
     def clear_logs(self):
-        """Clear all logs."""
-        self.logs = []
-        self._save_logs()
+        """Clear all logs (thread-safe)."""
+        with self._lock:
+            self.logs = []
+            self._save_logs()
     
     def flush(self):
-        """Force save logs to disk."""
-        self._save_logs()
+        """Force save logs to disk (thread-safe)."""
+        with self._lock:
+            self._save_logs()

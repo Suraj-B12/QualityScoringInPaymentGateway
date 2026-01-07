@@ -1226,46 +1226,97 @@ let socket = null;
 let liveStreamActive = false;
 let liveTransactionLogs = [];
 const MAX_LOG_ENTRIES = 100;
+let reconnectTimer = null;
+let heartbeatInterval = null;
 
-// Initialize Live Feed socket connection
+// Initialize Live Feed socket connection with robust reconnection
 function initLiveSocket() {
     if (typeof io === 'undefined') {
-        console.warn('Socket.IO not loaded');
+        console.warn('Socket.IO not loaded - using polling fallback');
+        updateLiveConnectionStatus('disconnected');
+        updateHeaderConnectionStatus('disconnected');
         return null;
     }
 
+    // If already connected, return existing socket
     if (socket && socket.connected) {
         return socket;
     }
 
+    // Clean up existing socket if disconnected
+    if (socket) {
+        socket.removeAllListeners();
+        socket.close();
+    }
+
+    console.log('Initializing WebSocket connection...');
+    updateLiveConnectionStatus('connecting');
+    updateHeaderConnectionStatus('connecting');
+
     socket = io(window.location.origin, {
-        transports: ['websocket', 'polling'],
+        transports: ['websocket', 'polling'],  // Try WebSocket first, fallback to polling
         reconnection: true,
         reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        reconnectionAttempts: 10
+        reconnectionDelayMax: 10000,
+        reconnectionAttempts: Infinity,  // Never give up
+        timeout: 20000,
+        forceNew: false
     });
 
     // Connection events
     socket.on('connect', () => {
-        console.log('Live socket connected');
+        console.log('WebSocket connected successfully');
         updateLiveConnectionStatus('connected');
+        updateHeaderConnectionStatus('connected');
+
+        // Clear any pending reconnect timer
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+
+        // Start heartbeat to keep connection alive
+        startHeartbeat();
     });
 
-    socket.on('disconnect', () => {
-        console.log('Live socket disconnected');
+    socket.on('disconnect', (reason) => {
+        console.log('WebSocket disconnected:', reason);
         updateLiveConnectionStatus('disconnected');
+        updateHeaderConnectionStatus('disconnected');
         liveStreamActive = false;
         updateStreamButtons();
+
+        // Stop heartbeat
+        stopHeartbeat();
+
+        // If server closed connection, try to reconnect
+        if (reason === 'io server disconnect' || reason === 'transport close') {
+            scheduleReconnect();
+        }
     });
 
     socket.on('connect_error', (error) => {
-        console.error('Socket connection error:', error);
+        console.error('WebSocket connection error:', error.message);
         updateLiveConnectionStatus('disconnected');
+        updateHeaderConnectionStatus('disconnected');
     });
 
-    socket.on('reconnecting', () => {
+    socket.on('reconnect_attempt', (attemptNumber) => {
+        console.log(`Reconnection attempt ${attemptNumber}...`);
         updateLiveConnectionStatus('connecting');
+        updateHeaderConnectionStatus('connecting');
+    });
+
+    socket.on('reconnect', (attemptNumber) => {
+        console.log(`Reconnected after ${attemptNumber} attempts`);
+        showToast('success', 'Reconnected to server');
+    });
+
+    socket.on('reconnect_failed', () => {
+        console.error('Failed to reconnect after all attempts');
+        updateLiveConnectionStatus('disconnected');
+        updateHeaderConnectionStatus('disconnected');
+        showToast('error', 'Connection lost. Click Start Stream to retry.');
     });
 
     // Custom events
@@ -1295,10 +1346,46 @@ function initLiveSocket() {
         handleLiveTransaction(data);
     });
 
+    // Heartbeat response (pong)
+    socket.on('pong', () => {
+        // Connection is alive
+    });
+
     return socket;
 }
 
-// Update connection status UI
+// Start heartbeat to keep connection alive
+function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatInterval = setInterval(() => {
+        if (socket && socket.connected) {
+            socket.emit('ping');
+        }
+    }, 25000);  // Ping every 25 seconds
+}
+
+// Stop heartbeat
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+}
+
+// Schedule a reconnection attempt
+function scheduleReconnect() {
+    if (reconnectTimer) return;
+
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (!socket || !socket.connected) {
+            console.log('Attempting manual reconnection...');
+            initLiveSocket();
+        }
+    }, 3000);
+}
+
+// Update connection status UI (Live Feed panel)
 function updateLiveConnectionStatus(status) {
     const statusEl = document.getElementById('liveConnectionStatus');
     if (!statusEl) return;
@@ -1306,14 +1393,35 @@ function updateLiveConnectionStatus(status) {
     const dot = statusEl.querySelector('.status-dot');
     const text = statusEl.querySelector('.status-text');
 
-    dot.className = 'status-dot ' + status;
+    if (dot) dot.className = 'status-dot ' + status;
+
+    if (text) {
+        if (status === 'connected') {
+            text.textContent = 'Connected';
+        } else if (status === 'connecting') {
+            text.textContent = 'Connecting...';
+        } else {
+            text.textContent = 'Disconnected';
+        }
+    }
+}
+
+// Update header connection status (synced with WebSocket)
+function updateHeaderConnectionStatus(status) {
+    const indicator = document.getElementById('statusIndicator');
+    const statusText = document.getElementById('apiStatus');
+
+    if (!indicator || !statusText) return;
 
     if (status === 'connected') {
-        text.textContent = 'Connected';
+        indicator.className = 'status-indicator connected';
+        statusText.textContent = 'Connected';
     } else if (status === 'connecting') {
-        text.textContent = 'Connecting...';
+        indicator.className = 'status-indicator connecting';
+        statusText.textContent = 'Connecting...';
     } else {
-        text.textContent = 'Disconnected';
+        indicator.className = 'status-indicator disconnected';
+        statusText.textContent = 'Disconnected';
     }
 }
 

@@ -11,6 +11,7 @@ import json
 import math
 import time
 import threading
+from threading import Lock
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -80,22 +81,29 @@ if SOCKETIO_AVAILABLE:
 else:
     socketio = None
 
-# Global instances
+# Thread-safe global state
+_engine_lock = Lock()
+_streaming_lock = Lock()
+
+# Global instances (protected by locks)
 engine = None
 live_generator = LiveDataGenerator(anomaly_rate=0.15)
 log_storage = LiveLogStorage(log_file="live_stream_logs.json")
 
-# Streaming state
+# Streaming state (protected by _streaming_lock)
 streaming_active = False
 streaming_thread = None
 
 
 def get_engine(use_ai=False):
-    """Get or create engine instance."""
+    """Get or create engine instance (thread-safe singleton)."""
     global engine
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    engine = DQSEngine(gemini_api_key=api_key, use_ai=use_ai and bool(api_key))
-    return engine
+    with _engine_lock:
+        # Only create if AI setting matches or engine doesn't exist
+        if engine is None:
+            api_key = os.environ.get("GEMINI_API_KEY", "")
+            engine = DQSEngine(gemini_api_key=api_key, use_ai=use_ai and bool(api_key))
+        return engine
 
 
 @app.route('/')
@@ -520,10 +528,15 @@ def process_single_transaction(transaction):
 
 
 def streaming_worker():
-    """Background worker for streaming transactions."""
+    """Background worker for streaming transactions (thread-safe)."""
     global streaming_active
     
-    while streaming_active:
+    while True:
+        # Check if we should continue (with lock)
+        with _streaming_lock:
+            if not streaming_active:
+                break
+        
         try:
             # Generate transaction
             transaction = live_generator.generate_transaction()
@@ -531,7 +544,7 @@ def streaming_worker():
             # Process it
             result = process_single_transaction(transaction)
             
-            # Store log
+            # Store log (already thread-safe)
             log_storage.add_log(transaction, result)
             
             # Emit via WebSocket
@@ -567,45 +580,57 @@ if SOCKETIO_AVAILABLE:
         """Handle client disconnection."""
         pass
     
+    @socketio.on('ping')
+    def handle_ping():
+        """Handle heartbeat ping from client."""
+        emit('pong')
+    
     @socketio.on('start_stream')
     def handle_start_stream(data=None):
-        """Start the live transaction stream."""
+        """Start the live transaction stream (thread-safe)."""
         global streaming_active, streaming_thread
         
-        if streaming_active:
-            emit('stream_status', {'status': 'already_running'})
-            return
-        
-        # Set anomaly rate if provided
-        if data and 'anomaly_rate' in data:
-            live_generator.set_anomaly_rate(data['anomaly_rate'])
-        
-        streaming_active = True
-        streaming_thread = threading.Thread(target=streaming_worker, daemon=True)
-        streaming_thread.start()
+        with _streaming_lock:
+            if streaming_active:
+                emit('stream_status', {'status': 'already_running'})
+                return
+            
+            # Set anomaly rate if provided
+            if data and 'anomaly_rate' in data:
+                live_generator.set_anomaly_rate(data['anomaly_rate'])
+            
+            streaming_active = True
+            streaming_thread = threading.Thread(target=streaming_worker, daemon=True)
+            streaming_thread.start()
         
         emit('stream_status', {'status': 'started'})
     
     @socketio.on('stop_stream')
     def handle_stop_stream():
-        """Stop the live transaction stream."""
+        """Stop the live transaction stream (thread-safe)."""
         global streaming_active
         
-        streaming_active = False
+        with _streaming_lock:
+            streaming_active = False
         emit('stream_status', {'status': 'stopped'})
 
 
 if __name__ == '__main__':
+    # Production-safe debug mode (default: False)
+    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    port = int(os.environ.get('PORT', 5000))
+    
     print("=" * 60)
     print("  DQS ENGINE - Enterprise Data Quality Platform")
-    print("  Open http://localhost:5000 in your browser")
+    print(f"  Open http://localhost:{port} in your browser")
     if SOCKETIO_AVAILABLE:
         print("  Live streaming: ENABLED (WebSocket)")
     else:
         print("  Live streaming: DISABLED (install flask-socketio)")
+    print(f"  Debug mode: {'ON' if debug_mode else 'OFF'}")
     print("=" * 60)
     
     if SOCKETIO_AVAILABLE:
-        socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=debug_mode, port=port, host='0.0.0.0', allow_unsafe_werkzeug=debug_mode)
     else:
-        app.run(debug=True, port=5000)
+        app.run(debug=debug_mode, port=port, host='0.0.0.0')

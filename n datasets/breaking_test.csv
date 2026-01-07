@@ -1,0 +1,9 @@
+,,,,,,,,,
+,,,,,,,,,
+null,null,null,null,null,null,null,null,null,null
+,NaN,,INVALID,🔥💀,NOT_A_NETWORK,,99999999,,ZZZZZ
+{"json":"in_csv"},<script>alert(1)</script>,not_a_date,FAKE_STATUS,../../../../etc/passwd,DROP TABLE,'; DROP TABLE users; --,abcdefghijklmnopqrstuvwxyz12345678901234567890,CUST!@#,∞∞∞
+TXN-BROKEN,-999999.99,9999-99-99T99:99:99,💀DEAD💀,NULL,UNKNOWN_NETWORK,M!@#$%,0000,C💀💀,XX
+,0.0001,1970-01-01T00:00:00,pending,expired_token,BITCOIN,FAKE,9999,bot,moon
+{"nested":{"deeply":{"broken":"json"}}},1e308,invalid,status,,network,,mcc,,country
+TRANSACTION_ID_THAT_IS_WAY_TOO_LONG_TO_BE_VALID_AND_SHOULD_CAUSE_ISSUES_IN_THE_SYSTEM_BECAUSE_IT_EXCEEDS_REASONABLE_LIMITS,99999999999999999999.99999999,2099-12-31T23:59:59,MAYBE?,token_value_that_is_extremely_long_and_should_not_be_accepted_by_any_reasonable_validation_system,FAKE_NET,merchant_id_too_long_for_database_field_that_should_cause_truncation_or_error,category,customer_id_with_special_chars_!@#$%^&*(),XX
