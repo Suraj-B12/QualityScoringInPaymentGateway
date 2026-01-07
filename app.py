@@ -87,7 +87,7 @@ _streaming_lock = Lock()
 
 # Global instances (protected by locks)
 engine = None
-live_generator = LiveDataGenerator(anomaly_rate=0.15)
+live_generator = LiveDataGenerator(anomaly_rate=0.40)  # 40% of transactions have quality issues
 log_storage = LiveLogStorage(log_file="live_stream_logs.json")
 
 # Streaming state (protected by _streaming_lock)
@@ -415,6 +415,41 @@ def set_live_api_key():
     return jsonify({"success": True, "message": "API key configured"})
 
 
+@app.route('/api/live/set-api-url', methods=['POST'])
+def set_live_api_url():
+    """Set external API URL for live data source."""
+    data = request.json or {}
+    api_url = data.get('api_url', '')
+    live_generator.set_api_url(api_url)
+    return jsonify({
+        "success": True, 
+        "message": "API URL configured" if api_url else "Using simulated data",
+        "api_url": api_url,
+        "using_external": live_generator.use_external_api
+    })
+
+
+@app.route('/api/live/test-connection', methods=['POST'])
+def test_api_connection():
+    """Test connection to external API."""
+    data = request.json or {}
+    api_url = data.get('api_url', '')
+    
+    if not api_url:
+        return jsonify({"success": False, "error": "No API URL provided"})
+    
+    try:
+        import requests
+        response = requests.get(api_url, timeout=5)
+        return jsonify({
+            "success": response.status_code == 200,
+            "status_code": response.status_code,
+            "message": "Connection successful" if response.status_code == 200 else f"HTTP {response.status_code}"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
 @app.route('/api/live/set-anomaly-rate', methods=['POST'])
 def set_live_anomaly_rate():
     """Set anomaly rate for generated data."""
@@ -463,20 +498,19 @@ def process_single_transaction(transaction):
     try:
         start_time = time.time()
         
-        # Flatten for DQS
-        flat_txn = live_generator.flatten_for_dqs(transaction)
-        
         # Get or create engine
         eng = get_engine(use_ai=False)
         
         # Process single record using run() method
-        pipeline_result = eng.run([flat_txn])
+        # NOTE: Pass raw transaction (nested) - the engine handles flattening via Layer 2
+        pipeline_result = eng.run([transaction])
         
         processing_time = (time.time() - start_time) * 1000
         
         # Extract result from PipelineResult
         if pipeline_result and pipeline_result.success:
             # Get counts from pipeline result
+            print(f"DEBUG: Decision Report:\n{pipeline_result.decision_report}")
             if pipeline_result.safe_count > 0:
                 action = 'SAFE_TO_USE'
             elif pipeline_result.escalate_count > 0:
@@ -492,19 +526,43 @@ def process_single_transaction(transaction):
             reason = ''
             flags = []
             
-            # Try to get more details from decision report
-            if pipeline_result.decision_report:
-                # Parse basic info from report
-                if 'ESCALATE' in pipeline_result.decision_report.upper():
-                    action = 'ESCALATE'
-                elif 'REVIEW' in pipeline_result.decision_report.upper():
-                    action = 'REVIEW_REQUIRED'
+
         else:
-            action = 'UNKNOWN'
-            dqs_score = 100
-            reason = ''
-            flags = pipeline_result.errors if pipeline_result else []
+            # Pipeline failed or returned no success - this means data quality issues
+            action = 'REVIEW_REQUIRED'
+            dqs_score = 50  # Low score for failed pipeline
+            reason = 'Pipeline processing failed'
+            flags = pipeline_result.errors if pipeline_result else ['Processing failed']
         
+        # Build layer timings
+        layer_timings = []
+        if pipeline_result and pipeline_result.layer_timings:
+            for t in pipeline_result.layer_timings:
+                layer_timings.append({
+                    "layer_id": t.layer_id,
+                    "layer_name": t.layer_name,
+                    "duration_ms": round(t.duration_ms, 2),
+                    "status": t.status,
+                    "start_time": t.start_time.isoformat(),
+                    "end_time": t.end_time.isoformat()
+                })
+
+        # Build detailed layer results
+        layer_details = {}
+        if hasattr(eng, 'layer_results'):
+            for lid, res in eng.layer_results.items():
+                layer_details[str(lid)] = {
+                    "layer_id": res.layer_id,
+                    "layer_name": res.layer_name,
+                    "status": res.status.value,
+                    "checks_performed": res.checks_performed,
+                    "checks_passed": res.checks_passed,
+                    "issues_count": len(res.issues) if res.issues else 0,
+                    "warnings_count": len(res.warnings) if res.warnings else 0,
+                    "details": sanitize_for_json(res.details) if 'sanitize_for_json' in globals() else res.details,
+                    "can_continue": res.can_continue
+                }
+
         return {
             "success": True,
             "transaction_id": transaction.get('transaction', {}).get('transaction_id'),
@@ -512,17 +570,31 @@ def process_single_transaction(transaction):
             "action": action,
             "reason": reason,
             "flags": flags,
-            "processing_time_ms": round(processing_time, 2)
+            "processing_time_ms": round(processing_time, 2),
+            "total_duration_ms": round(processing_time, 2),
+            # Detailed debug info
+            "decision_report": pipeline_result.decision_report if pipeline_result else "",
+            "execution_report": pipeline_result.execution_report if pipeline_result else "",
+            "layer_timings": layer_timings,
+            "layer_details": layer_details,
+            "total_records": 1,
+            "safe_count": pipeline_result.safe_count if pipeline_result else 0,
+            "review_count": pipeline_result.review_count if pipeline_result else 0,
+            "escalate_count": pipeline_result.escalate_count if pipeline_result else 0,
+            "rejected_count": pipeline_result.rejected_count if pipeline_result else 0,
+            "quality_rate": pipeline_result.quality_rate if pipeline_result else 0.0,
+            "average_dqs": dqs_score
         }
         
     except Exception as e:
+        # Pipeline crashed - likely due to data quality issues
         return {
-            "success": False,
+            "success": True,  # Still return as "success" so it shows in the UI
             "error": str(e),
             "transaction_id": transaction.get('transaction', {}).get('transaction_id'),
-            "dqs_score": 0,
-            "action": "ERROR",
-            "flags": [str(e)],
+            "dqs_score": 25,  # Low score for crashes
+            "action": "ESCALATE",
+            "flags": [f"Pipeline error: {str(e)}"],
             "processing_time_ms": 0
         }
 
@@ -547,14 +619,13 @@ def streaming_worker():
             # Store log (already thread-safe)
             log_storage.add_log(transaction, result)
             
-            # Emit via WebSocket (broadcast=True for background threads)
-            # This doesn't require request context
+            # Emit via WebSocket to all clients
             if socketio:
                 socketio.emit('transaction_result', {
                     'transaction': transaction,
                     'result': result,
                     'stats': log_storage.get_stats()
-                }, broadcast=True)
+                })
             
             # Wait 1 second
             time.sleep(1)
