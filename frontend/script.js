@@ -109,6 +109,12 @@ function switchTab(tab) {
     if (tab === 'live') {
         onLiveTabActivated();
     }
+
+    // Toggle Pipeline Visualization
+    const pipelineSection = document.getElementById('pipelineVisualizationSection');
+    if (pipelineSection) {
+        pipelineSection.style.display = (tab === 'live') ? 'none' : 'block';
+    }
 }
 
 // Slider update
@@ -837,6 +843,20 @@ function displayOutputTable(data) {
 
 function generateOutputRows(data) {
     const rows = [];
+
+    // If single live transaction with real data
+    if (data.total_records === 1 && data.transaction_id) {
+        return [{
+            id: data.transaction_id,
+            action: data.action || 'REVIEW_REQUIRED',
+            dqs: data.average_dqs || 0,
+            quality: (data.average_dqs > 80) ? 'High' : (data.average_dqs > 60 ? 'Medium' : 'Low'),
+            anomaly: (data.layer_details && data.layer_details['4.4'] && data.layer_details['4.4'].issues_count > 0) ? 'Detected' : 'None',
+            confidence: (data.layer_details && data.layer_details['8']) ? 'Calculated' : '-',
+            issues: data.reason || '-'
+        }];
+    }
+
     const total = data.total_records || 0;
 
     // Generate rows based on action counts
@@ -848,16 +868,16 @@ function generateOutputRows(data) {
 
         const dqs = action === 'SAFE_TO_USE' ? 85 + Math.random() * 15 :
             action === 'REVIEW_REQUIRED' ? 50 + Math.random() * 30 :
-                20 + Math.random() * 40;
+                10 + Math.random() * 40;
 
         rows.push({
-            id: `txn_${String(i).padStart(8, '0')}`,
+            id: `Txn_${1000 + i}`,
             action: action,
             dqs: dqs,
-            quality: dqs >= 80 ? 'High' : dqs >= 50 ? 'Medium' : 'Low',
-            anomaly: action !== 'SAFE_TO_USE' ? 'Yes' : 'No',
-            confidence: dqs >= 70 ? 'High' : dqs >= 40 ? 'Medium' : 'Low',
-            issues: action === 'SAFE_TO_USE' ? '0' : Math.floor(Math.random() * 3 + 1).toString()
+            quality: dqs > 80 ? 'High' : (dqs > 60 ? 'Medium' : 'Low'),
+            anomaly: Math.random() > 0.9 ? 'Detected' : 'None',
+            confidence: Math.random() > 0.9 ? 'Low' : 'High',
+            issues: action === 'SAFE_TO_USE' ? '-' : 'Quality issues detected'
         });
     }
 
@@ -1437,15 +1457,25 @@ function updateStreamButtons() {
 }
 
 // Start live stream (auto-starts when tab opens)
-function startLiveStream() {
+async function startLiveStream() {
+    // Set API URL before starting
+    await setLiveApiUrl();
+
     const sock = initLiveSocket();
     if (!sock) {
         console.warn('WebSocket not available');
+        showToast('error', 'WebSocket not available. Please ensure flask-socketio is installed.');
         return;
     }
 
     // Send start command
     sock.emit('start_stream', {});
+
+    // Update button states
+    const startBtn = document.getElementById('btnStartStream');
+    const stopBtn = document.getElementById('btnStopStream');
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
 
     // Clear any empty state
     const logContainer = document.getElementById('liveLogContainer');
@@ -1453,6 +1483,9 @@ function startLiveStream() {
     if (emptyState) {
         emptyState.style.display = 'none';
     }
+
+    // Update connection status
+    updateLiveConnectionStatus('connected');
 }
 
 // Stop live stream
@@ -1460,6 +1493,15 @@ function stopLiveStream() {
     if (socket && socket.connected) {
         socket.emit('stop_stream');
     }
+
+    // Update button states
+    const startBtn = document.getElementById('btnStartStream');
+    const stopBtn = document.getElementById('btnStopStream');
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+
+    // Update connection status
+    updateLiveConnectionStatus('disconnected');
 }
 
 // Handle incoming live transaction
@@ -1473,6 +1515,14 @@ function handleLiveTransaction(data) {
 
     // Add to log
     addLiveLogEntry(transaction, result);
+
+    // Master Log
+    const duration = result.total_duration_ms || result.processing_time_ms || 0;
+    const action = result.action;
+    const type = action === 'SAFE_TO_USE' ? 'success' : (action === 'ESCALATE' ? 'error' : 'warn');
+
+    appendMasterLog(`Transaction ${result.transaction_id} processed in ${duration}ms.`, 'info');
+    appendMasterLog(`> Outcome: ${action} | DQS: ${result.average_dqs?.toFixed(1) || 0}`, type);
 
     // Update counter
     const counterEl = document.getElementById('liveTransactionCount');
@@ -1499,6 +1549,12 @@ function addLiveLogEntry(transaction, result) {
     const logContainer = document.getElementById('liveLogContainer');
     if (!logContainer) return;
 
+    // Clear empty state
+    const emptyState = logContainer.querySelector('.live-log-empty');
+    if (emptyState) {
+        emptyState.remove();
+    }
+
     // Store log
     liveTransactionLogs.unshift({ transaction, result, timestamp: new Date().toISOString() });
     if (liveTransactionLogs.length > MAX_LOG_ENTRIES) {
@@ -1519,30 +1575,46 @@ function addLiveLogEntry(transaction, result) {
         actionText = 'REJECTED';
     }
 
-    // Create entry element
-    const entry = document.createElement('div');
-    entry.className = `live-log-entry ${actionClass}`;
+    // Determine DQS badge class
+    const dqs = result.dqs_score || 100;
+    let dqsClass = 'high';
+    if (dqs < 60) dqsClass = 'low';
+    else if (dqs < 80) dqsClass = 'medium';
 
-    const time = new Date().toLocaleTimeString();
+    // Create entry element with new format
+    const entry = document.createElement('div');
+    entry.className = 'live-txn-entry new';
+
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
     const txnId = result.transaction_id || transaction?.transaction?.transaction_id || 'N/A';
     const amount = transaction?.transaction?.amount || 0;
-    const dqs = result.dqs_score || 100;
-    const reason = result.reason || 'Processed successfully';
+    const isExternal = transaction?._metadata?.source === 'external_api';
 
     entry.innerHTML = `
-        <span class="log-time">${time}</span>
-        <span class="log-txn-id">${txnId}</span>
-        <span class="log-amount">₹${amount.toLocaleString()}</span>
-        <span class="log-dqs">DQS: ${dqs.toFixed(0)}</span>
-        <span class="log-action ${actionClass}">${actionText}</span>
-        <span class="log-reason">${reason}</span>
+        <span class="txn-time">${time}</span>
+        <span class="txn-id">${txnId}</span>
+        <span class="txn-amount">₹${amount.toLocaleString()}</span>
+        <span class="txn-dqs"><span class="dqs-badge ${dqsClass}">${dqs.toFixed(0)}</span></span>
+        <span class="txn-action"><span class="action-badge ${actionClass}">${actionText}</span></span>
+        <span class="txn-source ${isExternal ? 'external' : ''}">${isExternal ? '🔗 External' : '📊 Simulated'}</span>
     `;
+
+    // Make clickable
+    entry.style.cursor = 'pointer';
+    entry.title = "Click to view full analysis details";
+    entry.addEventListener('click', () => showLiveDetails(result));
 
     // Insert at top
     logContainer.insertBefore(entry, logContainer.firstChild);
 
+    // Remove 'new' class after animation
+    setTimeout(() => entry.classList.remove('new'), 500);
+
+    // Update rolling stats
+    updateRollingStats();
+
     // Limit visible entries
-    const entries = logContainer.querySelectorAll('.live-log-entry');
+    const entries = logContainer.querySelectorAll('.live-txn-entry');
     if (entries.length > MAX_LOG_ENTRIES) {
         entries[entries.length - 1].remove();
     }
@@ -1551,11 +1623,6 @@ function addLiveLogEntry(transaction, result) {
 // Set API key for live data source
 async function setLiveApiKey() {
     const apiKey = document.getElementById('liveApiKey')?.value || '';
-
-    if (!apiKey) {
-        showToast('error', 'Please enter an API key');
-        return;
-    }
 
     try {
         const response = await fetch('/api/live/set-api-key', {
@@ -1567,13 +1634,125 @@ async function setLiveApiKey() {
         const data = await response.json();
         if (data.success) {
             showToast('success', 'API key configured');
-            document.getElementById('liveApiKey').value = '';
-        } else {
-            showToast('error', 'Failed to set API key');
         }
     } catch (error) {
         showToast('error', 'Error setting API key');
     }
+}
+
+// Test API connection
+async function testApiConnection() {
+    const apiUrl = document.getElementById('liveApiUrl')?.value || '';
+    const hint = document.getElementById('apiUrlHint');
+
+    if (!apiUrl) {
+        if (hint) {
+            hint.textContent = 'Leave empty to use simulated demo data';
+            hint.className = 'config-hint';
+        }
+        return;
+    }
+
+    if (hint) {
+        hint.textContent = 'Testing connection...';
+        hint.className = 'config-hint';
+    }
+
+    try {
+        const response = await fetch('/api/live/test-connection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            if (hint) {
+                hint.textContent = '✓ Connection successful';
+                hint.className = 'config-hint success';
+            }
+            showToast('success', 'API connection successful');
+        } else {
+            if (hint) {
+                hint.textContent = '✗ ' + (data.error || 'Connection failed');
+                hint.className = 'config-hint error';
+            }
+            showToast('error', data.error || 'Connection failed');
+        }
+    } catch (error) {
+        if (hint) {
+            hint.textContent = '✗ Network error';
+            hint.className = 'config-hint error';
+        }
+        showToast('error', 'Failed to test connection');
+    }
+}
+
+// Set API URL for external data source
+async function setLiveApiUrl() {
+    const apiUrl = document.getElementById('liveApiUrl')?.value || '';
+    const apiKey = document.getElementById('liveApiKey')?.value || '';
+
+    // Set API key first if provided
+    if (apiKey) {
+        await setLiveApiKey();
+    }
+
+    try {
+        const response = await fetch('/api/live/set-api-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+
+        const data = await response.json();
+
+        // Update data source badge
+        const badge = document.getElementById('dataSourceBadge');
+        if (badge) {
+            if (data.using_external) {
+                badge.innerHTML = '<span class="source-icon">🔗</span><span class="source-text">External API</span>';
+                badge.classList.add('external');
+            } else {
+                badge.innerHTML = '<span class="source-icon">📊</span><span class="source-text">Simulated Data</span>';
+                badge.classList.remove('external');
+            }
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Failed to set API URL:', error);
+        return { success: false };
+    }
+}
+
+// Update rolling statistics
+function updateRollingStats() {
+    const logs = liveTransactionLogs.slice(0, 50);
+    if (logs.length === 0) return;
+
+    // Calculate average DQS
+    const dqsSum = logs.reduce((sum, log) => sum + (log.result?.dqs_score || 100), 0);
+    const avgDqs = dqsSum / logs.length;
+
+    // Calculate quality rate (safe transactions)
+    const safeCount = logs.filter(log => {
+        const action = log.result?.action || '';
+        return action === 'SAFE' || action === 'PROCESS' ||
+            action === 'safe' || action.includes('SAFE');
+    }).length;
+    const qualityRate = (safeCount / logs.length) * 100;
+
+    // Update UI
+    const avgDqsEl = document.getElementById('rollingAvgDqs');
+    const dqsBar = document.getElementById('rollingDqsBar');
+    const qualityRateEl = document.getElementById('rollingQualityRate');
+    const qualityBar = document.getElementById('rollingQualityBar');
+
+    if (avgDqsEl) avgDqsEl.textContent = avgDqs.toFixed(0);
+    if (dqsBar) dqsBar.style.width = `${avgDqs}%`;
+    if (qualityRateEl) qualityRateEl.textContent = `${qualityRate.toFixed(0)}%`;
+    if (qualityBar) qualityBar.style.width = `${qualityRate}%`;
 }
 
 // Clear live logs
@@ -1705,12 +1884,12 @@ async function downloadFilteredLogs() {
     }
 }
 
-// Initialize socket when switching to Live tab - AUTO-STARTS streaming
+// Initialize socket when switching to Live tab
 function onLiveTabActivated() {
-    // Auto-start streaming when user opens the Live Feed tab
-    const sock = initLiveSocket();
+    // Initialize socket but don't auto-start - user clicks Start
+    initLiveSocket();
 
-    // Fetch current stats first
+    // Fetch current stats
     fetch('/api/live/stats')
         .then(res => res.json())
         .then(data => {
@@ -1718,16 +1897,147 @@ function onLiveTabActivated() {
                 updateLiveStats(data.stats);
                 document.getElementById('liveTransactionCount').textContent = data.stats.total || 0;
 
-                // Auto-start if not already streaming
-                if (!data.streaming && sock) {
-                    setTimeout(() => {
-                        startLiveStream();
-                    }, 500);
-                } else if (data.streaming) {
+                // If already streaming, update UI
+                if (data.streaming) {
                     updateLiveConnectionStatus('connected');
                     liveStreamActive = true;
+                    const startBtn = document.getElementById('btnStartStream');
+                    const stopBtn = document.getElementById('btnStopStream');
+                    if (startBtn) startBtn.disabled = true;
+                    if (stopBtn) stopBtn.disabled = false;
                 }
             }
         })
         .catch(err => console.error('Failed to fetch live stats:', err));
+}
+
+// Show details for a live transaction
+function showLiveDetails(fullResult) {
+    if (!fullResult) return;
+
+    const modal = document.getElementById('recordModal');
+    const title = document.getElementById('modalRecordTitle');
+    const body = document.getElementById('modalRecordBody');
+
+    if (!modal || !body) return;
+
+    // Set Title
+    if (title) title.textContent = "Live Transaction: " + (fullResult.transaction_id || 'Unknown');
+
+    // Helper to generate layer rows (DIV version)
+    const generateLayerRows = (timings, details) => {
+        if (!timings) return '<div class="no-data">No data</div>';
+        return timings.map((t, i) => {
+            const detail = (details && details[String(t.layer_id)]) || {};
+            const statusClass = t.status.toLowerCase();
+            const detailText = typeof detail.details === 'object' ? JSON.stringify(detail.details) : (detail.details || '-');
+
+            return `
+                <div class="modal-layer-item ${t.status === 'PASSED' ? 'passed' : 'failed'}" style="margin-bottom: 8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong>L${t.layer_id}: ${t.layer_name}</strong>
+                        <span class="status-tag-inline ${statusClass}">${t.status}</span>
+                    </div>
+                    <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+                        Duration: ${t.duration_ms.toFixed(2)}ms
+                    </div>
+                    <div style="font-size:12px; margin-top:4px; color:var(--text-secondary);">
+                        ${detailText}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    };
+
+    // Build Content using DIVs instead of Table for premium look
+    const layerHtml = generateLayerRows(fullResult.layer_timings, fullResult.layer_details);
+
+    body.innerHTML = `
+        <div class="modal-results-container">
+            <!-- Summary Header -->
+            <div class="modal-summary-header" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="stat-card ${fullResult.action === 'SAFE_TO_USE' ? 'stat-success' : (fullResult.action === 'ESCALATE' ? 'stat-danger' : 'stat-warning')}" style="padding: 1rem;">
+                    <span class="stat-label">Action</span>
+                    <span class="stat-value" style="font-size: 1.2rem;">${fullResult.action}</span>
+                </div>
+                <div class="stat-card" style="padding: 1rem;">
+                    <span class="stat-label">DQS Score</span>
+                    <span class="stat-value" style="font-size: 1.2rem;">${fullResult.average_dqs ? fullResult.average_dqs.toFixed(1) : '0.0'}</span>
+                </div>
+                <div class="stat-card" style="padding: 1rem;">
+                    <span class="stat-label">Processing Time</span>
+                    <span class="stat-value" style="font-size: 1.2rem;">${fullResult.total_duration_ms || 0} ms</span>
+                </div>
+                <div class="stat-card" style="padding: 1rem;">
+                    <span class="stat-label">Quality Rate</span>
+                    <span class="stat-value" style="font-size: 1.2rem;">${fullResult.quality_rate || 0}%</span>
+                </div>
+            </div>
+
+            <!-- Decision Report -->
+            <div class="section-card" style="margin-bottom: 1.5rem;">
+                <div class="section-header">
+                    <h3>AI Analysis & Decision Report</h3>
+                </div>
+                <div class="report-content-wrapper" style="max-height: 200px; overflow-y: auto;">
+                    <pre class="report-content">${fullResult.decision_report || 'No report available'}</pre>
+                </div>
+            </div>
+
+            <!-- Layer Analysis (New List View) -->
+            <div class="section-card" style="margin-bottom: 1.5rem;">
+                <div class="section-header">
+                    <h3>Pipeline Layer Verification</h3>
+                </div>
+                <div class="modal-layer-list">
+                    ${layerHtml}
+                </div>
+            </div>
+
+            <!-- Terminal Log -->
+            <div class="section-card">
+                <div class="section-header">
+                    <h3>System Execution Logs</h3>
+                </div>
+                <div class="report-content-wrapper" style="max-height: 200px; overflow-y: auto;">
+                    <pre class="report-content log-style">${fullResult.execution_report || 'No log available'}</pre>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Show Modal
+    modal.style.display = 'flex';
+
+    // Hide main results section if it was shown (to avoid confusion)
+    const MainResults = document.getElementById('resultsSection');
+    if (MainResults) MainResults.style.display = 'none';
+
+    showToast('info', `Viewing details for ${fullResult.transaction_id || 'record'}`);
+}
+
+// ==========================================
+// Helper Functions
+// ==========================================
+
+function appendMasterLog(message, type = 'info') {
+    const container = document.getElementById('masterLogContainer');
+    if (!container) return;
+
+    const div = document.createElement('div');
+    div.className = `log-line ${type}`;
+
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+    div.innerHTML = `
+        <span class="timestamp">[${time}]</span>
+        <span class="msg">${message}</span>
+    `;
+
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function clearMasterLog() {
+    const container = document.getElementById('masterLogContainer');
+    if (container) container.innerHTML = '<div class="log-line info"><span class="timestamp">SYSTEM</span><span class="msg">Log cleared. Ready...</span></div>';
 }
